@@ -48,7 +48,9 @@ enum Cmd {
         /// Unit indexes from `units`, as 3-19 or 5.
         #[arg(long)]
         units: Option<String>,
-        #[arg(long, default_value = "out")]
+        /// Defaults to the spike's own out/, the one directory git ignores:
+        /// a run quotes the book.
+        #[arg(long, default_value = concat!(env!("CARGO_MANIFEST_DIR"), "/out"))]
         out: PathBuf,
         /// Runs of the books before this one, in reading order: their cast is
         /// carried into this book's prompts.
@@ -62,7 +64,7 @@ enum Cmd {
         /// The series run's name: it goes to <out>/<run>.json.
         #[arg(long)]
         run: String,
-        #[arg(long, default_value = "out")]
+        #[arg(long, default_value = concat!(env!("CARGO_MANIFEST_DIR"), "/out"))]
         out: PathBuf,
         /// The model that decides the weak name matches.
         #[arg(long, default_value = "claude")]
@@ -169,6 +171,9 @@ fn extract_run(
 ) -> Result<()> {
     let prior = after.iter().map(|p| load(p)).collect::<Result<Vec<_>>>()?;
     let book = book::read_epub(book_path)?;
+    if book.is_empty() {
+        bail!("no units found in {}", book_path.display());
+    }
     let llm = llm::Backend::parse(backend)?;
     let (from, to) = match units {
         Some(s) => parse_range(s, book.len())?,
