@@ -1,0 +1,35 @@
+# Rust
+target/
+**/*.rs.bk
+
+# Book and subtitle files never belong here, whoever's they are; fixtures are
+# invented text. Re-admit a generated fixture by name with a `!` line.
+*.epub
+*.mobi
+*.azw3
+*.pdf
+*.cbz
+*.cbr
+*.srt
+*.ass
+*.vtt
+*.mkv
+
+# Session working files: task ledgers, review packages, mockups, handoffs.
+# They name local paths and the corpus.
+.superpowers/
+/docs/handoffs/
+.claude/
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Editors and OS
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
+*.log
