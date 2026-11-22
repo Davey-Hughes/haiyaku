@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>haiyaku spike</title>
+<style>
+:root { --bg:#fafafa; --fg:#1d1d1f; --muted:#66666c; --line:#c8c8cc; --panel:#fff; --here:#2a62c9;
+  --family:#2a62c9; --romance:#b3439a; --friendly:#d9822b; --hostile:#3a3a3a; --guide:#7652c8; --neutral:#9a9aa0; }
+@media (prefers-color-scheme: dark) {
+  :root { --bg:#151517; --fg:#e8e8ea; --muted:#9a9aa2; --line:#3a3a40; --panel:#1e1e22; --here:#6d9cf0;
+    --family:#6d9cf0; --romance:#e07ccb; --friendly:#f0a04b; --hostile:#d0d0d6; --guide:#a88cf0; --neutral:#77777e; }
+}
+html, body { height:100%; }
+body { margin:0; font:14px/1.45 system-ui, sans-serif; background:var(--bg); color:var(--fg);
+  display:grid; grid-template-columns:1fr 400px; grid-template-rows:auto 1fr; }
+header { grid-column:1 / 3; display:flex; gap:10px; align-items:center; padding:8px 14px; border-bottom:1px solid var(--line); }
+header input[type=range] { flex:1; }
+#unit { min-width:24em; font-weight:600; }
+#graph { width:100%; height:100%; display:block; min-height:0; }
+aside { overflow:auto; padding:6px 14px 20px; border-left:1px solid var(--line); background:var(--panel); min-height:0; }
+.node circle { stroke:var(--fg); stroke-width:1; fill:var(--panel); cursor:pointer; }
+.node.here circle { fill:var(--here); }
+.node.sel circle { stroke-width:3; }
+.node text { font-size:11px; fill:var(--fg); paint-order:stroke; stroke:var(--bg); stroke-width:3px; pointer-events:none; }
+.edge { stroke-width:1.6; opacity:.8; }
+.dim { opacity:.12; }
+.k-family { stroke:var(--family); } .k-romance { stroke:var(--romance); }
+.k-friend, .k-ally { stroke:var(--friendly); }
+.k-rival, .k-enemy { stroke:var(--hostile); stroke-dasharray:5 3; }
+.k-mentor, .k-serves { stroke:var(--guide); }
+.k-colleague, .k-acquaintance { stroke:var(--neutral); }
+.elabel { font-size:9px; fill:var(--muted); paint-order:stroke; stroke:var(--bg); stroke-width:3px; }
+#arrow path { fill:var(--guide); }
+h2 { font-size:15px; margin:14px 0 4px; } h3 { font-size:13px; margin:12px 0 4px; color:var(--muted); }
+ul { margin:0; padding-left:18px; } li { margin:2px 0; }
+.q { color:var(--muted); font-style:italic; }
+.stats { color:var(--muted); font-size:12px; margin-top:6px; }
+.pick { cursor:pointer; text-decoration:underline dotted; }
+.legend { font-size:12px; color:var(--muted); }
+.legend b { display:inline-block; width:18px; height:0; border-top:3px solid; vertical-align:middle; margin:0 4px 0 10px; }
+pre { white-space:pre-wrap; font-size:11px; color:var(--muted); margin:2px 0 6px; }
+</style>
+</head>
+<body>
+<header>
+  <button id="prev" aria-label="Previous unit">◀</button>
+  <input id="slider" type="range" min="0" value="0" aria-label="Unit">
+  <button id="next" aria-label="Next unit">▶</button>
+  <span id="unit"></span>
+  <label><input id="labels" type="checkbox"> edge labels</label>
+</header>
+<svg id="graph"></svg>
+<aside id="side"></aside>
+<script id="data" type="application/json">__DATA__</script>
+<script>
+var DATA = JSON.parse(document.getElementById('data').textContent);
+var steps = DATA.steps, titles = {};
+DATA.units.forEach(function (u) { titles[u.index] = u.title; });
+var layouts = [], selected = null, k = 0;
+var NS = 'http://www.w3.org/2000/svg';
+
+function rng(seed) {
+  return function () { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed / 4294967296; };
+}
+
+// Each step's layout starts from the previous step's and nothing later.
+function layoutFor(n) {
+  for (var s = layouts.length; s <= n; s++) {
+    var prev = s ? layouts[s - 1] : {}, st = steps[s], pos = {}, rand = rng(s + 7), adj = {};
+    st.edges.forEach(function (e) {
+      (adj[e.a] = adj[e.a] || []).push(e.b);
+      (adj[e.b] = adj[e.b] || []).push(e.a);
+    });
+    st.characters.forEach(function (c) { if (prev[c.id]) pos[c.id] = { x: prev[c.id].x, y: prev[c.id].y }; });
+    st.characters.forEach(function (c) {
+      if (pos[c.id]) return;
+      var nb = (adj[c.id] || []).filter(function (id) { return pos[id]; })[0];
+      var base = nb ? pos[nb] : { x: 0, y: 0 };
+      pos[c.id] = { x: base.x + (rand() - 0.5) * 120, y: base.y + (rand() - 0.5) * 120 };
+    });
+    simulate(st, pos, s ? 200 : 400);
+    layouts.push(pos);
+  }
+  return layouts[n];
+}
+
+function simulate(st, pos, iters) {
+  var ids = st.characters.map(function (c) { return c.id; });
+  var P = ids.map(function (id) { return pos[id]; }), idx = {};
+  ids.forEach(function (id, i) { idx[id] = i; });
+  var E = st.edges.map(function (e) { return [idx[e.a], idx[e.b]]; })
+    .filter(function (p) { return p[0] !== undefined && p[1] !== undefined; });
+  for (var it = 0; it < iters; it++) {
+    var t = 10 * (1 - it / iters) + 0.3;
+    var F = P.map(function () { return { x: 0, y: 0 }; });
+    for (var i = 0; i < P.length; i++) {
+      for (var j = i + 1; j < P.length; j++) {
+        var dx = P[i].x - P[j].x, dy = P[i].y - P[j].y, d2 = dx * dx + dy * dy + 0.01, d = Math.sqrt(d2), f = 3000 / d2;
+        F[i].x += dx / d * f; F[i].y += dy / d * f; F[j].x -= dx / d * f; F[j].y -= dy / d * f;
+      }
+    }
+    E.forEach(function (p) {
+      var a = P[p[0]], b = P[p[1]], dx = b.x - a.x, dy = b.y - a.y, d = Math.sqrt(dx * dx + dy * dy) + 0.01, f = (d - 100) * 0.04;
+      F[p[0]].x += dx / d * f; F[p[0]].y += dy / d * f; F[p[1]].x -= dx / d * f; F[p[1]].y -= dy / d * f;
+    });
+    for (var m = 0; m < P.length; m++) {
+      F[m].x -= P[m].x * 0.005; F[m].y -= P[m].y * 0.005;
+      var len = Math.hypot(F[m].x, F[m].y);
+      if (len > 0) { var sc = Math.min(len, t) / len; P[m].x += F[m].x * sc; P[m].y += F[m].y * sc; }
+    }
+  }
+}
+
+function el(tag, attrs, parent) {
+  var e = document.createElementNS(NS, tag);
+  for (var a in attrs) e.setAttribute(a, attrs[a]);
+  if (parent) parent.appendChild(e);
+  return e;
+}
+function esc(s) {
+  return String(s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; });
+}
+function factText(f, names) {
+  var dir = (f.kind === 'mentor' || f.kind === 'serves') ? ' (' + esc(names[f.from] || f.from) + ' ' + (f.kind === 'mentor' ? 'teaches' : 'serves') + ')' : '';
+  var when = 'since ' + esc(titles[f.first] || f.first) + (f.last !== f.first ? ', last ' + esc(titles[f.last] || f.last) : '');
+  return '<b>' + f.kind + '</b>' + (f.note ? ' (' + esc(f.note) + ')' : '') + dir + ' · ' + when;
+}
+
+function render() {
+  var st = steps[k], pos = layoutFor(k), svg = document.getElementById('graph');
+  document.getElementById('slider').value = k;
+  document.getElementById('unit').textContent = (k + 1) + ' / ' + steps.length + ' · ' + st.title;
+  svg.innerHTML = '';
+  var defs = el('defs', {}, svg), mk = el('marker', { id: 'arrow', viewBox: '0 0 10 10', refX: 10, refY: 5, markerWidth: 7, markerHeight: 7, orient: 'auto' }, defs);
+  el('path', { d: 'M0,0 L10,5 L0,10 z' }, mk);
+  var xs = [0], ys = [0];
+  st.characters.forEach(function (c) { xs.push(pos[c.id].x); ys.push(pos[c.id].y); });
+  var minx = Math.min.apply(null, xs) - 60, maxx = Math.max.apply(null, xs) + 140;
+  var miny = Math.min.apply(null, ys) - 40, maxy = Math.max.apply(null, ys) + 40;
+  svg.setAttribute('viewBox', [minx, miny, maxx - minx, maxy - miny].join(' '));
+  var names = {}, linked = {};
+  st.characters.forEach(function (c) { names[c.id] = c.name; });
+  if (selected && !names[selected]) selected = null;
+  if (selected) {
+    linked[selected] = true;
+    st.edges.forEach(function (e) { if (e.a === selected) linked[e.b] = true; if (e.b === selected) linked[e.a] = true; });
+  }
+  var showLabels = document.getElementById('labels').checked;
+  st.edges.forEach(function (e) {
+    var a = pos[e.a], b = pos[e.b];
+    if (!a || !b) return;
+    var f = e.facts.slice().sort(function (x, y) { return y.first - x.first; })[0];
+    var dim = selected && e.a !== selected && e.b !== selected;
+    var directed = f.kind === 'mentor' || f.kind === 'serves';
+    if (directed && f.from === e.b) { var tmp = a; a = b; b = tmp; }
+    var dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy) || 1, cut = directed ? 12 : 0;
+    var line = el('line', { x1: a.x, y1: a.y, x2: b.x - dx / d * cut, y2: b.y - dy / d * cut, 'class': 'edge k-' + f.kind + (dim ? ' dim' : '') }, svg);
+    if (directed) line.setAttribute('marker-end', 'url(#arrow)');
+    el('title', {}, line).textContent = names[e.a] + ' – ' + names[e.b] + ': ' + e.facts.map(function (x) { return x.kind + (x.note ? ' (' + x.note + ')' : ''); }).join(', ');
+    if (showLabels && !dim) {
+      var t = el('text', { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, 'class': 'elabel' }, svg);
+      t.textContent = e.facts.map(function (x) { return x.kind; }).join(', ');
+    }
+  });
+  st.characters.forEach(function (c) {
+    var p = pos[c.id], dim = selected && !linked[c.id];
+    var g = el('g', { 'class': 'node' + (c.here ? ' here' : '') + (c.id === selected ? ' sel' : '') + (dim ? ' dim' : ''), transform: 'translate(' + p.x + ',' + p.y + ')' }, svg);
+    el('circle', { r: 4 + Math.sqrt(c.seen) * 2.2 }, g);
+    el('text', { x: 9, y: 4 }, g).textContent = c.name;
+    g.addEventListener('click', function (ev) { ev.stopPropagation(); selected = selected === c.id ? null : c.id; render(); });
+  });
+  side(st, names);
+}
+
+function side(st, names) {
+  var h = '<div class="stats">' + esc(st.stats) + '</div>';
+  var c = st.characters.filter(function (x) { return x.id === selected; })[0];
+  if (c) {
+    h += '<h2>' + esc(c.name) + '</h2>';
+    if (c.aliases.length) h += '<div>Also: ' + c.aliases.map(esc).join(', ') + '</div>';
+    if (c.merged.length) h += '<div>Revealed to be the same as: ' + c.merged.map(esc).join(', ') + '</div>';
+    h += '<div>First seen: ' + esc(titles[c.first] || c.first) + ' · in ' + c.seen + ' unit(s)</div>';
+    h += '<div class="q">“' + esc(c.evidence) + '”</div><h3>Relations</h3><ul>';
+    st.edges.forEach(function (e) {
+      if (e.a !== c.id && e.b !== c.id) return;
+      var other = e.a === c.id ? e.b : e.a;
+      h += '<li><span class="pick" data-id="' + esc(other) + '">' + esc(names[other]) + '</span><ul>';
+      e.facts.forEach(function (f) { h += '<li>' + factText(f, names) + '<div class="q">“' + esc(f.evidence) + '”</div></li>'; });
+      h += '</ul></li>';
+    });
+    h += '</ul>';
+  }
+  h += '<h2>This unit</h2><ul>' + st.changes.map(function (x) { return '<li>' + esc(x) + '</li>'; }).join('') + '</ul>';
+  if (st.rejected.length) {
+    h += '<details><summary>Rejected (' + st.rejected.length + ')</summary>';
+    st.rejected.forEach(function (r) { h += '<pre>' + esc(r.reason + ': ' + JSON.stringify(r.item)) + '</pre>'; });
+    h += '</details>';
+  }
+  var list = st.characters.slice().sort(function (a, b) { return b.seen - a.seen || a.name.localeCompare(b.name); });
+  h += '<h3>Characters (' + list.length + ', filled = in this unit)</h3><ul>' + list.map(function (x) {
+    return '<li><span class="pick" data-id="' + esc(x.id) + '">' + esc(x.name) + '</span>' + (x.here ? ' ●' : '') + '</li>';
+  }).join('') + '</ul>';
+  h += '<p class="legend"><b style="border-color:var(--family)"></b>family<b style="border-color:var(--romance)"></b>romance' +
+    '<b style="border-color:var(--friendly)"></b>friend/ally<b style="border-color:var(--hostile);border-top-style:dashed"></b>rival/enemy' +
+    '<b style="border-color:var(--guide)"></b>mentor/serves<b style="border-color:var(--neutral)"></b>colleague/acquaintance</p>';
+  document.getElementById('side').innerHTML = h;
+}
+
+document.getElementById('side').addEventListener('click', function (ev) {
+  var id = ev.target.getAttribute && ev.target.getAttribute('data-id');
+  if (id) { selected = id; render(); }
+});
+document.getElementById('graph').addEventListener('click', function () { selected = null; render(); });
+document.getElementById('slider').max = steps.length - 1;
+document.getElementById('slider').addEventListener('input', function (ev) { k = +ev.target.value; render(); });
+document.getElementById('prev').addEventListener('click', function () { if (k > 0) { k--; render(); } });
+document.getElementById('next').addEventListener('click', function () { if (k < steps.length - 1) { k++; render(); } });
+document.getElementById('labels').addEventListener('change', render);
+document.addEventListener('keydown', function (ev) {
+  if (ev.key === 'ArrowLeft' && k > 0) { k--; render(); }
+  if (ev.key === 'ArrowRight' && k < steps.length - 1) { k++; render(); }
+});
+render();
+</script>
+</body>
+</html>

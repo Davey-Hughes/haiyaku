@@ -1,0 +1,4 @@
+[toolchain]
+# The same pin as taiyaku, which will build haiyaku as a dependency.
+channel = "1.100.0"
+components = ["rustfmt", "clippy"]

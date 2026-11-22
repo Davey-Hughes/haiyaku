@@ -2,6 +2,9 @@
 target/
 **/*.rs.bk
 
+# Spike output: events quote the book, and the corpus is copyrighted.
+/spike/out/
+
 # Book and subtitle files never belong here, whoever's they are; fixtures are
 # invented text. Re-admit a generated fixture by name with a `!` line.
 *.epub
