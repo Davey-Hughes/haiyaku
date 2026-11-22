@@ -45,6 +45,13 @@ pub trait Backend: std::fmt::Debug {
     /// The model the spec named, or `none` for a replay: what
     /// [`BookRecord::model`](crate::log::BookRecord::model) records.
     fn model(&self) -> &str;
+    /// Where the replies come from when the name and the model do not say: a server's base URL, a replay's
+    /// directory, and empty by default. A run's cache ([`extract_book`](crate::extract::extract_book)) keys a
+    /// reply by it beside the name and the model, so two servers that serve a model under one name, or two
+    /// replay directories, do not answer for each other.
+    fn endpoint(&self) -> &str {
+        ""
+    }
     /// One JSON object that should fit the schema. Any failure is [`Error::Model`].
     fn call(&self, request: &Request<'_>) -> Result<Reply>;
 }

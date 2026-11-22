@@ -33,7 +33,12 @@ pub fn sha256_file(path: &Path) -> Result<String> {
             Err(e) => return Err(e.into()),
         }
     }
-    Ok(hasher.finalize().iter().map(|byte| format!("{byte:02x}")).collect())
+    Ok(hex(&hasher.finalize()))
+}
+
+/// `bytes` in lowercase hex, two digits a byte: the one spelling of a hash this crate writes.
+pub(crate) fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 /// Writes the book's log to a sidecar at `path`: a new SQLite file at [`SCHEMA_VERSION`] that holds this
@@ -100,18 +105,17 @@ pub fn import_book(conn: &mut Connection, sidecar: &Path, expected_sha256: &str)
     write_book(conn, &log)
 }
 
-/// Creates an empty file beside `path` for the export to write to, and returns its path. Beside it, because
-/// a rename replaces `path` in one step only within a file system.
-fn create_beside(path: &Path) -> Result<PathBuf> {
-    let name =
-        path.file_name().ok_or_else(|| Error::Invalid(format!("{} names no file to export to", path.display())))?;
+/// Creates an empty file beside `path`, for a write that is then renamed over `path`, and returns its path.
+/// Beside it, because a rename replaces `path` in one step only within a file system.
+pub(crate) fn create_beside(path: &Path) -> Result<PathBuf> {
+    let name = path.file_name().ok_or_else(|| Error::Invalid(format!("{} names no file", path.display())))?;
     let mut attempt = 0u32;
     loop {
         let mut temporary = name.to_os_string();
         temporary.push(format!(".{attempt}.tmp"));
         let temporary = path.with_file_name(temporary);
-        // Created here and not by SQLite, which opens a file that is already there: a name that another
-        // export holds, or that a killed one left behind, must never be written into.
+        // Created here and not by the writer, which may open a file that is already there as SQLite does: a
+        // name that another write holds, or that a killed one left behind, must never be written into.
         match OpenOptions::new().write(true).create_new(true).open(&temporary) {
             Ok(_) => return Ok(temporary),
             Err(e) if e.kind() == ErrorKind::AlreadyExists => attempt += 1,

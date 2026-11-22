@@ -200,8 +200,10 @@ What changes from the spike:
   the title follows the name (포터 씨, 위즐리 부인) and nothing is
   capitalised, and for Homer, whose characters have no surnames.
 - The prompt carries only the relevant part of the roster: the characters
-  whose names occur in the chapter, plus those seen in recent chapters. By
-  chapter 17 the spike sent all 77 characters and 92 pairs.
+  whose names, or the surname labelled in one of them, occur in the chapter,
+  plus those seen in recent chapters. A surname counts only when it is longer
+  than one letter or syllable and, in a script with case, written in its own
+  case. By chapter 17 the spike sent all 77 characters and 92 pairs.
 - When a chapter gives a known character a fuller name, extraction writes a
   `named` event. The fold shows the best name known at the position: a full
   personal name over a partial one, a partial one over a description.

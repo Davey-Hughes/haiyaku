@@ -3,6 +3,72 @@
 Findings and measurements that are not worth a design doc but should not be
 worked out again. Newest section first.
 
+## Plan 2 acceptance, 2026-11-22: Sorcerer's Stone in English and Korean
+
+The `haiyaku` binary extracted the 17 chapters of each book (English
+entries 4-20, Korean 5-21) on Claude Sonnet three times: once with Part B
+as reviewed, then twice after fixes to the prompt and to the part of the
+roster a chapter gets. The share is rejected entries (whole items and
+single names) over kept items plus rejected entries.
+
+| Run | Prompt | Book | Time | Kept | Rejected | Share | Cost |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | 2 | English | 207 s | 435 | 14 | 3.1% | 1.22 USD |
+| 1 | 2 | Korean | 222 s | 394 | 26 | 6.2% | 1.72 USD |
+| 2 | 3 | English | 233 s | 466 | 4 | 0.9% | 1.29 USD |
+| 2 | 3 | Korean | 248 s | 423 | 4 | 0.9% | 1.77 USD |
+| 3 | 4 | English | 249 s | 461 | 6 | 1.3% | 1.34 USD |
+| 3 | 4 | Korean | 279 s | 418 | 5 | 1.2% | 1.91 USD |
+
+| Check | Run 1 EN | Run 1 KO | Run 2 EN | Run 2 KO | Run 3 EN | Run 3 KO |
+| --- | --- | --- | --- | --- | --- | --- |
+| Share at most 3% (EN), 5% (KO) | fail | fail | pass | pass | pass | pass |
+| No two characters with one name; cast | 83, see below | 71 | 79, pass | 79, pass | 77, pass | 76, pass |
+| Both reveals at 17, not at 16 | pass | fail | pass | fail | fail | pass |
+| The boy met by description at 5, named at 6 | fail | fail | pass | pass | pass | pass |
+| Hagrid's creatures by `owns` | pass | pass | pass | pass | pass | pass |
+| The mother's family relations at 6 (KO) | | pass | | pass | | pass |
+
+**Run 1 failed on the model's rewording.** The checks require a name, a
+description or a quote as the chapter writes it. The model composed
+descriptions, joined a full name from parts the chapter writes apart, put
+a name where the text has a pronoun and changed Korean word endings, and a
+rejected new character took its relations with it. No two characters shared
+a full name, but four came back as second characters. McGonagall (in both
+books) and Lily, first met under a title and surname, were not listed in a
+chapter that writes only their full names. Harry's parents came back in the
+English chapter 12 under the names he calls them. Flitwick was listed in
+chapter 9, the chapter after his first, and the model gave him a new ref
+there. Two of three samples of the Korean
+chapter-17 prompt came back nearly empty: 5 characters and 0 or 3
+relations.
+
+**The fixes.** Prompt 3 puts the chapter first and the rules last. It asks
+that a name or description given from the chapter be one run of its words,
+that a listed personal name keep its ref, that a quote be copied character
+for character, and that a same-as name two different characters. The
+roster also lists a character whose labelled surname stands in the
+chapter, written in its own case where the script has case and longer than
+one letter or syllable. Prompt 4 adds that a listed pair gains a relation of
+another kind when the chapter reveals one. On the captured Korean chapter-17
+prompt, Snape's protection of Harry came back in 2 of 3 samples with that
+sentence and in none of 2 without it.
+
+**One sample a chapter decides the reveal check.** Run 2 recorded both
+reveals in English and missed Snape's protection in Korean. Run 3 recorded
+both in Korean and missed it in English. There, chapter 17 also merged
+Quirrell into Voldemort by a same-as, so Quirrell's relations read as
+Voldemort's from then on. See O11 and O12 in [status.md](status.md).
+
+**The runs also show smaller gaps.** An alias that outranks a
+character's shown name does not replace it: in English, Mrs. Weasley stays
+under a description to the end (O13). In Korean run 3 she came back in
+chapter 17 as a second character, because her first one carried no
+labelled surname and had not been seen since chapter 6. The `--html` page holds 77 to 83
+characters, but its labels collide in the dense centre (O14). The three
+runs, the single-chapter samples and the prompt experiment cost about
+9.7 USD.
+
 ## Spike review, 2026-11-21: defects left in the spike
 
 A review of the spike before its PR found the defects below. The spike keeps

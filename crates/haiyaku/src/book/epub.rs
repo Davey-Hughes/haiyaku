@@ -295,9 +295,9 @@ enum Content {
     Other,
 }
 
-/// How a spine item of `media_type` is read, the type compared lower-cased and without parameters.
+/// How a spine item of `media_type` is read, the type compared as [`essence`] gives it.
 fn content(media_type: &str) -> Content {
-    let essence = media_type.split(';').next().unwrap_or_default().trim().to_ascii_lowercase();
+    let essence = essence(media_type);
     if TEXT_TYPES.contains(&essence.as_str()) {
         Content::Text
     } else if BINARY_FAMILIES.iter().any(|family| essence.starts_with(family))
@@ -307,6 +307,12 @@ fn content(media_type: &str) -> Content {
     } else {
         Content::Other
     }
+}
+
+/// A media type as it is compared: lower-cased and without parameters, since a type's name is not case-sensitive
+/// and `Application/XHTML+XML; charset=utf-8` names the type `application/xhtml+xml`.
+fn essence(media_type: &str) -> String {
+    media_type.split(';').next().unwrap_or_default().trim().to_ascii_lowercase()
 }
 
 /// The archive path of the package that `container.xml` names: the path its first `rootfile` whose
@@ -375,7 +381,7 @@ impl Package {
     /// navigation document, each once.
     fn tables_of_contents(&self) -> Vec<(&Item, TocKind)> {
         let named = self.ncx.as_deref().and_then(|id| self.item(id));
-        let typed = self.manifest.iter().find(|item| item.media_type == NCX_MEDIA_TYPE);
+        let typed = self.manifest.iter().find(|item| essence(&item.media_type) == NCX_MEDIA_TYPE);
         let nav = self.manifest.iter().find(|item| item.properties.split_whitespace().any(|p| p == "nav"));
         let mut tables: Vec<(&Item, TocKind)> = Vec::new();
         for (item, kind) in [(named, TocKind::Ncx), (typed, TocKind::Ncx), (nav, TocKind::Nav)] {
@@ -551,8 +557,8 @@ fn kept_entries(entries: Vec<(String, String)>, toc_path: &str, documents: &[Spi
 }
 
 /// The archive path a table-of-contents target written in the file at the archive path `toc_path` names. A
-/// target that is a fragment alone points into that file itself, as a navigation document in the spine links to
-/// its own sections.
+/// target that is empty or a fragment alone points into that file itself, as a navigation document in the spine
+/// links to its own sections.
 fn target_path(toc_path: &str, target: &str) -> Option<String> {
     if target.split('#').next().is_some_and(str::is_empty) {
         Some(toc_path.to_owned())

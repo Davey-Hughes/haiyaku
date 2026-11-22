@@ -11,7 +11,14 @@ the manga and book reader, will use the library; the program will also cover
 shows through their subtitles.
 
 **Status:** the core crate exists: the schema, the store, the fold and the
-sidecars. There is no extraction and no program yet.
+sidecars. Extraction and the `haiyaku` program exist too, with two
+commands. `haiyaku extract <book.epub>` lists a book's table of contents,
+and `haiyaku extract <book.epub> --chapters 1-17` extracts those entries
+with a model, Claude by default, into a database.
+`haiyaku show <book.epub> --at 5` prints the characters and how they
+relate as a reader knows them after chapter 5; with `--html <file>` it
+writes a page that steps through them chapter by chapter, for checking a
+run.
 [docs/status.md](docs/status.md) says where the project stands.
 
 ## License

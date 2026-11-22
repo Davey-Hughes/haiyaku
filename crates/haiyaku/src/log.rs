@@ -186,7 +186,8 @@ pub enum RelationKind {
 }
 
 impl RelationKind {
-    const ALL: [Self; 11] = [
+    /// Every kind, in the order a reply's schema and the prompt list them.
+    pub const ALL: [Self; 11] = [
         Self::Family,
         Self::Romance,
         Self::Friend,

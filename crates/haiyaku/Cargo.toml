@@ -22,7 +22,7 @@ bundled = ["rusqlite/bundled"]
 # them: with `default-features = false` it compiles none of this.
 extract = ["dep:html-escape", "dep:serde_json", "dep:ureq", "dep:zip"]
 # The `haiyaku` binary.
-cli = ["extract"]
+cli = ["extract", "dep:clap"]
 
 [[bin]]
 name = "haiyaku"
@@ -30,6 +30,7 @@ path = "src/bin/haiyaku/main.rs"
 required-features = ["cli"]
 
 [dependencies]
+clap = { version = "4.6", features = ["derive"], optional = true }
 html-escape = { version = "0.2", optional = true }
 rusqlite = { version = "0.43", features = ["backup"] }
 serde_json = { version = "1.0.151", optional = true }

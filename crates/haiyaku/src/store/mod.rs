@@ -12,6 +12,10 @@ pub use book::{read_book, read_events, write_book};
 pub use migrate::{SCHEMA_VERSION, migrate, schema_version};
 pub use series::{Link, LinkMethod, Order, Series, finished_chapters, put_links, put_series, read_links, read_series};
 pub use sidecar::{export_book, import_book, sha256_file};
+// Extraction's reply cache spells its keys and replaces its files with these, so the crate has one way to do
+// each. Behind the feature, as the cache is: without it nothing outside the sidecar uses them.
+#[cfg(feature = "extract")]
+pub(crate) use sidecar::{create_beside, hex};
 
 use crate::{Error, Result};
 

@@ -1,0 +1,431 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>haiyaku: the cast chapter by chapter</title>
+<style>
+/* Each group of relation kinds has a colour and a line pattern of its own, so that no two groups differ by
+   hue alone; the colours are also chosen to stay apart under red-green colour vision deficiency. */
+:root {
+  color-scheme: light dark;
+  --bg: #fafafa; --fg: #1d1d1f; --muted: #5e5e66; --rule: #d4d4d8; --panel: #ffffff;
+  --family: #0072b2; --romance: #a83f86; --friendly: #b86e00; --hostile: #2e2e33; --guide: #007c61; --neutral: #86868c;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #151517; --fg: #e8e8ea; --muted: #a0a0a8; --rule: #3a3a40; --panel: #1e1e22;
+    --family: #5ab4ec; --romance: #e58ac4; --friendly: #f0a436; --hostile: #e4e4e8; --guide: #2fc79c; --neutral: #7c7c84;
+  }
+}
+html, body { height: 100%; margin: 0; }
+body {
+  font: 14px/1.45 system-ui, sans-serif; background: var(--bg); color: var(--fg);
+  display: grid; grid-template-columns: minmax(0, 1fr) 380px; grid-template-rows: auto minmax(0, 1fr);
+}
+header {
+  grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center;
+  padding: 8px 14px; border-bottom: 1px solid var(--rule);
+}
+header h1 { font-size: 15px; margin: 0 8px 0 0; }
+#slider { flex: 1 1 200px; }
+#where { font-weight: 600; min-width: 14em; }
+#graph { width: 100%; height: 100%; display: block; }
+aside { overflow: auto; padding: 4px 14px 20px; border-left: 1px solid var(--rule); background: var(--panel); }
+@media (max-width: 760px) {
+  body { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 60vh auto; }
+  aside { border-left: 0; border-top: 1px solid var(--rule); }
+}
+
+.node { cursor: pointer; }
+.node .dot { stroke: var(--fg); stroke-width: 1.5; fill: var(--bg); }
+.node.here .dot { fill: var(--fg); }
+.ring { fill: none; stroke: var(--fg); stroke-width: 2.5; }
+.node text {
+  font-size: 12px; fill: var(--fg); paint-order: stroke; stroke: var(--bg); stroke-width: 3px; pointer-events: none;
+}
+.edge { fill: none; stroke: currentColor; stroke-width: 1.8; }
+.edge.mine { stroke-width: 3.4; }
+.head { fill: currentColor; stroke: none; }
+.dim { opacity: .15; }
+.kinds { font-size: 10px; fill: var(--muted); paint-order: stroke; stroke: var(--bg); stroke-width: 3px; }
+.g-family { color: var(--family); }
+.g-romance { color: var(--romance); } .g-romance .edge { stroke-dasharray: 12 3 2 3; }
+.g-friendly { color: var(--friendly); } .g-friendly .edge { stroke-dasharray: 10 5; }
+.g-hostile { color: var(--hostile); } .g-hostile .edge { stroke-dasharray: 4 3; }
+.g-guide { color: var(--guide); } .g-guide .edge { stroke-dasharray: 12 3 2 3 2 3; }
+/* Round dots, which no other pattern has. */
+.g-neutral { color: var(--neutral); } .g-neutral .edge { stroke-dasharray: 0 5; stroke-linecap: round; }
+
+aside h2 { font-size: 16px; margin: 14px 0 2px; }
+aside h3 { font-size: 13px; margin: 16px 0 4px; color: var(--muted); }
+aside p { margin: 4px 0; }
+.stats, .meta { color: var(--muted); }
+aside ul { margin: 0; padding-left: 18px; }
+aside li { margin: 3px 0; }
+.facts { list-style: none; padding-left: 0; }
+blockquote {
+  margin: 2px 0 8px; padding-left: 8px; border-left: 2px solid var(--rule); color: var(--muted); font-style: italic;
+}
+button.pick {
+  font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; text-align: left;
+  text-decoration: underline dotted;
+}
+button.pick[aria-pressed="true"] { font-weight: 700; text-decoration: underline solid; }
+.cast { list-style: none; padding-left: 0; }
+.legend { list-style: none; padding-left: 0; color: var(--muted); font-size: 12px; }
+.legend svg { vertical-align: middle; margin-right: 6px; }
+.hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="book"></h1>
+  <button id="prev" type="button" aria-label="Previous chapter">&#9664;</button>
+  <input id="slider" type="range" min="0" value="0" aria-label="Chapter">
+  <button id="next" type="button" aria-label="Next chapter">&#9654;</button>
+  <span id="where" aria-live="polite"></span>
+  <label><input id="kinds" type="checkbox"> kinds on the lines</label>
+</header>
+<svg id="graph" role="img" aria-label="The characters and how they relate"></svg>
+<aside id="side"></aside>
+<script id="data" type="application/json">__DATA__</script>
+<script>
+'use strict';
+const DATA = JSON.parse(document.getElementById('data').textContent);
+const steps = DATA.steps;
+const last = steps.length - 1;
+const SVG = 'http://www.w3.org/2000/svg';
+const RADIUS = 7;
+// The groups of kinds, each drawn in the colour and the pattern of its g- class in the stylesheet.
+const GROUPS = [
+  ['family', ['family']],
+  ['romance', ['romance']],
+  ['friendly', ['friend', 'ally']],
+  ['hostile', ['rival', 'enemy']],
+  ['guide', ['mentor', 'serves', 'owns']],
+  ['neutral', ['colleague', 'acquaintance']],
+];
+const groupOf = {};
+for (const [group, kinds] of GROUPS) for (const kind of kinds) groupOf[kind] = group;
+
+let at = Math.min(Math.max(DATA.at, 0), last);
+// A character's id: kept while stepping, so that it shows again in a chapter that has it, and is followed
+// into the character it was merged into.
+let selected = null;
+const layouts = [];
+
+function html(tag, attrs, ...children) {
+  const element = document.createElement(tag);
+  for (const [name, value] of Object.entries(attrs || {})) {
+    if (name.startsWith('on')) element.addEventListener(name.slice(2), value);
+    else element.setAttribute(name, value);
+  }
+  // Text goes in as text, never as markup: names and quotes come from the book.
+  element.append(...children.flat().filter((child) => child !== null && child !== undefined && child !== false));
+  return element;
+}
+
+function svg(tag, attrs, parent) {
+  const element = document.createElementNS(SVG, tag);
+  for (const [name, value] of Object.entries(attrs || {})) element.setAttribute(name, value);
+  if (parent) parent.appendChild(element);
+  return element;
+}
+
+function random(seed) {
+  return () => {
+    seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+    return seed / 4294967296;
+  };
+}
+
+// Each step's layout starts from the one before it and is computed before any later one, so where a
+// character stands after a chapter owes nothing to the chapters after it.
+function layout(n) {
+  while (layouts.length <= n) {
+    const s = layouts.length;
+    const step = steps[s];
+    const before = s > 0 ? layouts[s - 1] : {};
+    const pos = {};
+    const next = random(s + 1);
+    const neighbours = {};
+    for (const relation of step.relations) {
+      (neighbours[relation.a] = neighbours[relation.a] || []).push(relation.b);
+      (neighbours[relation.b] = neighbours[relation.b] || []).push(relation.a);
+    }
+    // A character merged into another hands it its place.
+    for (const character of step.characters) {
+      const from = [character.id, ...character.merged].find((id) => before[id]);
+      if (from) pos[character.id] = { x: before[from].x, y: before[from].y };
+    }
+    for (const character of step.characters) {
+      if (pos[character.id]) continue;
+      const near = (neighbours[character.id] || []).find((id) => pos[id]);
+      const base = near ? pos[near] : { x: 0, y: 0 };
+      pos[character.id] = { x: base.x + (next() - 0.5) * 120, y: base.y + (next() - 0.5) * 120 };
+    }
+    settle(step, pos, Object.keys(before).length > 0 ? 4 : 10);
+    layouts.push(pos);
+  }
+  return layouts[n];
+}
+
+// Pushes the characters apart, pulls related ones together and all of them a little towards the centre;
+// `heat` caps how far one moves in a round, and cools to nothing.
+function settle(step, pos, heat) {
+  const ids = step.characters.map((character) => character.id);
+  const index = {};
+  ids.forEach((id, i) => { index[id] = i; });
+  const p = ids.map((id) => pos[id]);
+  const springs = step.relations
+    .map((relation) => [index[relation.a], index[relation.b]])
+    .filter(([a, b]) => a !== undefined && b !== undefined);
+  const rounds = 200;
+  for (let round = 0; round < rounds; round++) {
+    const limit = heat * (1 - round / rounds) + 0.2;
+    const force = p.map(() => ({ x: 0, y: 0 }));
+    for (let i = 0; i < p.length; i++) {
+      for (let j = i + 1; j < p.length; j++) {
+        const dx = p[i].x - p[j].x, dy = p[i].y - p[j].y;
+        const d2 = dx * dx + dy * dy + 0.01, d = Math.sqrt(d2), f = 3000 / d2;
+        force[i].x += dx / d * f; force[i].y += dy / d * f;
+        force[j].x -= dx / d * f; force[j].y -= dy / d * f;
+      }
+    }
+    for (const [a, b] of springs) {
+      const dx = p[b].x - p[a].x, dy = p[b].y - p[a].y;
+      const d = Math.sqrt(dx * dx + dy * dy) + 0.01, f = (d - 110) * 0.04;
+      force[a].x += dx / d * f; force[a].y += dy / d * f;
+      force[b].x -= dx / d * f; force[b].y -= dy / d * f;
+    }
+    for (let i = 0; i < p.length; i++) {
+      force[i].x -= p[i].x * 0.005; force[i].y -= p[i].y * 0.005;
+      const length = Math.hypot(force[i].x, force[i].y);
+      if (length > 0) {
+        const scale = Math.min(length, limit) / length;
+        p[i].x += force[i].x * scale; p[i].y += force[i].y * scale;
+      }
+    }
+  }
+}
+
+function chapters(first, lastSeen) {
+  return first === lastSeen ? 'chapter ' + first : 'chapters ' + first + '-' + lastSeen;
+}
+
+// The id `selected` stands for in `step`: itself, the character it was merged into, or null.
+function chosen(step) {
+  if (selected === null) return null;
+  if (step.characters.some((character) => character.id === selected)) return selected;
+  const into = step.characters.find((character) => character.merged.includes(selected));
+  return into ? into.id : null;
+}
+
+// A merged id's name: the last one it was shown under, in this chapter or an earlier one; null if none was.
+function nameBefore(id) {
+  for (let s = at; s >= 0; s--) {
+    const character = steps[s].characters.find((c) => c.id === id);
+    if (character) return character.name;
+  }
+  return null;
+}
+
+function render() {
+  const step = steps[at];
+  const names = {};
+  for (const character of step.characters) names[character.id] = character.name;
+  const id = chosen(step);
+  document.getElementById('slider').value = at;
+  document.getElementById('prev').disabled = at === 0;
+  document.getElementById('next').disabled = at === last;
+  document.getElementById('where').textContent = at === 0
+    ? 'Before chapter 1'
+    : 'Chapter ' + at + ' of ' + last + ': ' + step.title;
+  graph(step, names, id);
+  panel(step, names, id);
+}
+
+function graph(step, names, id) {
+  const pos = layout(at);
+  const root = document.getElementById('graph');
+  root.replaceChildren();
+  const xs = [0], ys = [0];
+  for (const character of step.characters) { xs.push(pos[character.id].x); ys.push(pos[character.id].y); }
+  // Room for the names on the right, and never less than a small cast needs, which would otherwise be drawn
+  // as large as the window allows.
+  let left = Math.min(...xs) - 40, right = Math.max(...xs) + 160;
+  let top = Math.min(...ys) - 40, bottom = Math.max(...ys) + 40;
+  const wide = Math.max(0, 640 - (right - left)) / 2, tall = Math.max(0, 420 - (bottom - top)) / 2;
+  left -= wide; right += wide; top -= tall; bottom += tall;
+  root.setAttribute('viewBox', [left, top, right - left, bottom - top].join(' '));
+
+  const linked = new Set(id === null ? [] : [id]);
+  for (const relation of step.relations) {
+    if (relation.a === id || relation.b === id) { linked.add(relation.a); linked.add(relation.b); }
+  }
+  const showKinds = document.getElementById('kinds').checked;
+  const lines = svg('g', {}, root), marks = svg('g', {}, root);
+  for (const relation of step.relations) {
+    // Facts come in the order first stated: the line is drawn as the newest of them.
+    const fact = relation.facts[relation.facts.length - 1];
+    const [from, to] = fact.from === relation.b ? [relation.b, relation.a] : [relation.a, relation.b];
+    const a = pos[from], b = pos[to];
+    if (!a || !b) continue;
+    const mine = id !== null && (relation.a === id || relation.b === id);
+    const group = svg('g', { class: 'g-' + (groupOf[fact.kind] || 'neutral') + (id !== null && !mine ? ' dim' : '') }, lines);
+    const dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy) || 1, ux = dx / d, uy = dy / d;
+    // A directed fact's line stops at its arrowhead, and the arrowhead at the edge of the node.
+    const tip = fact.from ? RADIUS + 2 : 0, head = fact.from ? 9 : 0;
+    svg('line', {
+      class: 'edge' + (mine ? ' mine' : ''),
+      x1: a.x, y1: a.y, x2: b.x - ux * (tip + head), y2: b.y - uy * (tip + head),
+    }, group);
+    if (fact.from) {
+      const tx = b.x - ux * tip, ty = b.y - uy * tip, bx = tx - ux * head, by = ty - uy * head;
+      svg('path', {
+        class: 'head',
+        d: 'M' + tx + ',' + ty + 'L' + (bx - uy * 4.5) + ',' + (by + ux * 4.5) + 'L' + (bx + uy * 4.5) + ',' + (by - ux * 4.5) + 'Z',
+      }, group);
+    }
+    svg('title', {}, group).textContent = relation.facts.map((f) => factLine(f, relation, names)).join('\n');
+    if (showKinds && !(id !== null && !mine)) {
+      svg('text', { class: 'kinds', x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }, group).textContent =
+        relation.facts.map((f) => f.kind).join(', ');
+    }
+  }
+  for (const character of step.characters) {
+    const p = pos[character.id];
+    const here = character.last === step.chapter;
+    const dim = id !== null && !linked.has(character.id);
+    const node = svg('g', {
+      class: 'node' + (here ? ' here' : '') + (dim ? ' dim' : ''),
+      transform: 'translate(' + p.x + ',' + p.y + ')',
+    }, marks);
+    if (character.id === id) svg('circle', { class: 'ring', r: RADIUS + 5 }, node);
+    svg('circle', { class: 'dot', r: RADIUS }, node);
+    // Starts past the selection ring, so the name clears it.
+    svg('text', { x: RADIUS + 10, y: 4 }, node).textContent = character.name;
+    svg('title', {}, node).textContent = character.name + ' (' + character.id + '), ' +
+      (here ? 'in this chapter' : 'not in this chapter');
+    node.addEventListener('click', (event) => {
+      event.stopPropagation();
+      pick(character.id === id ? null : character.id);
+    });
+  }
+}
+
+function factLine(fact, relation, names) {
+  // An end the names lack stands as its id, as show prints it, rather than as "undefined".
+  const name = (id) => names[id] ?? id;
+  const other = fact.from === relation.a ? relation.b : relation.a;
+  const ends = fact.from
+    ? name(fact.from) + ' → ' + name(other)
+    : name(relation.a) + ' – ' + name(relation.b);
+  return fact.kind + ': ' + ends + (fact.note ? ', ' + fact.note : '') + ' (' + chapters(fact.first, fact.last) + ')';
+}
+
+function panel(step, names, id) {
+  const parts = [];
+  parts.push(html('p', { class: 'stats' }, at === 0
+    ? 'Nothing read yet.'
+    : 'Contents entry ' + step.entry + ': ' + step.kept + ' kept, ' + step.rejected + ' rejected. ' +
+      step.characters.length + ' characters, ' + step.relations.length + ' related pairs.'));
+  const character = step.characters.find((c) => c.id === id);
+  if (character) parts.push(...about(character, step, names));
+  parts.push(html('h3', {}, 'Characters (' + step.characters.length + ')'));
+  parts.push(html('ul', { class: 'cast' }, step.characters.map((c) => {
+    const here = c.last === step.chapter;
+    return html('li', {}, html('button', {
+      type: 'button', class: 'pick', 'aria-pressed': String(c.id === id), onclick: () => pick(c.id),
+    }, html('span', { 'aria-hidden': 'true' }, here ? '● ' : '○ '), c.name,
+    html('span', { class: 'hidden' }, here ? ', in this chapter' : '')));
+  })));
+  parts.push(legend());
+  document.getElementById('side').replaceChildren(...parts);
+}
+
+function about(character, step, names) {
+  const parts = [html('h2', {}, character.name)];
+  parts.push(html('p', { class: 'meta' }, character.id + ', ' + chapters(character.first, character.last)));
+  if (character.aliases.length) parts.push(html('p', {}, 'Also: ' + character.aliases.join(', ')));
+  if (character.merged.length) {
+    parts.push(html('p', {}, 'Found to be the same as: ' +
+      character.merged.map((other) => {
+        const name = nameBefore(other);
+        // An id never shown under a name of its own is given once, not as "c5 (c5)".
+        return name === null ? other : name + ' (' + other + ')';
+      }).join(', ')));
+  }
+  parts.push(html('h3', {}, 'Relations'));
+  const items = step.relations
+    .filter((relation) => relation.a === character.id || relation.b === character.id)
+    .map((relation) => {
+      const other = relation.a === character.id ? relation.b : relation.a;
+      return html('li', {},
+        html('button', { type: 'button', class: 'pick', onclick: () => pick(other) }, names[other] ?? other),
+        html('ul', { class: 'facts' }, relation.facts.map((fact) => html('li', {},
+          factLine(fact, relation, names),
+          html('blockquote', {}, fact.quote)))));
+    });
+  parts.push(items.length ? html('ul', {}, items) : html('p', { class: 'meta' }, 'None yet.'));
+  return parts;
+}
+
+function sample(group) {
+  const box = svg('svg', { width: 60, height: 12, viewBox: '0 0 60 12', 'aria-hidden': 'true' });
+  const g = svg('g', { class: 'g-' + group }, box);
+  svg('line', { class: 'edge', x1: 2, y1: 6, x2: group === 'guide' ? 50 : 58, y2: 6 }, g);
+  if (group === 'guide') svg('path', { class: 'head', d: 'M59,6L50,1.5L50,10.5Z' }, g);
+  return box;
+}
+
+function mark(here, ring) {
+  const box = svg('svg', { width: 60, height: 26, viewBox: '-30 -13 60 26', 'aria-hidden': 'true' });
+  const node = svg('g', { class: 'node' + (here ? ' here' : '') }, box);
+  if (ring) svg('circle', { class: 'ring', r: RADIUS + 5 }, node);
+  svg('circle', { class: 'dot', r: RADIUS }, node);
+  return box;
+}
+
+function legend() {
+  const kinds = GROUPS.map(([group, names]) => html('li', {}, sample(group),
+    names.join(', ') + (group === 'guide' ? ': from the mentor, the servant, the owner' : '')));
+  return html('div', {},
+    html('h3', {}, 'Key'),
+    html('ul', { class: 'legend' },
+      html('li', {}, mark(true, false), 'filled: in this chapter'),
+      html('li', {}, mark(false, false), 'hollow: not in this chapter'),
+      html('li', {}, mark(false, true), 'ringed: selected, its lines drawn heavier'),
+      kinds));
+}
+
+function pick(id) {
+  selected = id;
+  render();
+}
+
+function go(n) {
+  at = Math.min(Math.max(n, 0), last);
+  render();
+}
+
+const slider = document.getElementById('slider');
+slider.max = last;
+slider.addEventListener('input', () => go(Number(slider.value)));
+document.getElementById('prev').addEventListener('click', () => go(at - 1));
+document.getElementById('next').addEventListener('click', () => go(at + 1));
+document.getElementById('kinds').addEventListener('change', render);
+document.getElementById('graph').addEventListener('click', () => pick(null));
+document.addEventListener('keydown', (event) => {
+  // The slider moves itself on the arrow keys.
+  if (event.target === slider) return;
+  if (event.key === 'ArrowLeft') go(at - 1);
+  if (event.key === 'ArrowRight') go(at + 1);
+});
+document.getElementById('book').textContent = DATA.title;
+document.title = DATA.title + ': the cast chapter by chapter';
+render();
+</script>
+</body>
+</html>

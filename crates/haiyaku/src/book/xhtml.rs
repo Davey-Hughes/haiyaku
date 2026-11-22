@@ -226,6 +226,10 @@ struct Walk {
     /// Whether the open heading has given a block yet: a block that opens before then wraps the heading's text,
     /// and one that opens after it does not.
     heading_has_text: bool,
+    /// The block elements open, by name, innermost last; headings, line breaks and rules are not among them.
+    open_blocks: Vec<String>,
+    /// How many of `open_blocks` were open when the latest heading opened: those are around the heading.
+    around_heading: usize,
     /// The element whose contents are being passed over.
     skipping: Option<&'static str>,
 }
@@ -243,19 +247,20 @@ impl Walk {
         }
         match token {
             Token::Open(tag) => {
-                self.tag(&tag.name, !tag.self_closing);
+                self.tag(&tag.name, !tag.self_closing, false);
                 if !tag.self_closing {
                     self.skipping = SKIPPED.into_iter().find(|skipped| *skipped == tag.name);
                 }
             }
-            Token::Close(name) => self.tag(&name, false),
+            Token::Close(name) => self.tag(&name, false, true),
             Token::Text(text) if self.in_body => self.text.push_str(&text),
             Token::Text(_) => {}
         }
     }
 
-    /// A tag named `name`, which `enters` its element when it is an open tag with contents to follow.
-    fn tag(&mut self, name: &str, enters: bool) {
+    /// A tag named `name`, which `enters` its element when it is an open tag with contents to follow, and
+    /// `closes` it when it is a close tag.
+    fn tag(&mut self, name: &str, enters: bool, closes: bool) {
         if BLOCK_TAGS.contains(&name) {
             // Before the heading state below changes: the block ending here was read under the old one.
             self.end_block();
@@ -265,14 +270,31 @@ impl Walk {
             "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
                 self.in_heading = enters;
                 self.heading_has_text = false;
+                self.around_heading = self.open_blocks.len();
             }
             // A line break or a rule holds nothing, however it is written, so it opens no block of its own.
             "br" | "hr" => {}
+            _ if !BLOCK_TAGS.contains(&name) => {}
             // A heading left unclosed ends where a block opens after its text; otherwise every paragraph after it
             // would be read as a heading. A block that opens before any text, a div or p around it, is part of it,
             // and its close leaves the heading open.
-            _ if enters && self.in_heading && self.heading_has_text && BLOCK_TAGS.contains(&name) => {
-                self.in_heading = false;
+            _ if enters => {
+                if self.in_heading && self.heading_has_text {
+                    self.in_heading = false;
+                }
+                self.open_blocks.push(name.to_owned());
+            }
+            // A block's close also closes every block left unclosed inside it, and a close with no such block open
+            // closes nothing. A heading left unclosed ends where a block that was open around it closes, whether
+            // or not it has text, as an element ends with its parent; left open, it would make the text after that
+            // close a heading.
+            _ if closes => {
+                if let Some(at) = self.open_blocks.iter().rposition(|open| open == name) {
+                    if self.in_heading && at < self.around_heading {
+                        self.in_heading = false;
+                    }
+                    self.open_blocks.truncate(at);
+                }
             }
             _ => {}
         }

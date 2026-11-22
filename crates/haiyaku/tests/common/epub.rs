@@ -6,7 +6,9 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use haiyaku::book::{ChapterText, PlacedBlock};
+use haiyaku::extract::{Roster, check};
 use haiyaku::log::Position;
+use serde_json::{Value, json};
 use zip::CompressionMethod;
 use zip::write::SimpleFileOptions;
 
@@ -93,6 +95,103 @@ pub fn keeper_documents() -> Vec<(&'static str, Vec<u8>)> {
             xhtml("About the author", &["About the author", "The author of this story is invented too."]).into_bytes(),
         ),
     ]
+}
+
+/// Replies a model could have written to the prompts for chapters 1 to 3 of [`keeper_epub`], each quoting its
+/// chapter: chapter 1 introduces the keeper and Pip, whom she owns; chapter 2 names the keeper Ada Marsh and
+/// introduces the stranger she meets on the jetty; chapter 3 introduces Tom Reed, calls Ada "Mrs. Marsh", and
+/// reveals that the stranger is Tom Reed.
+pub fn keeper_replies() -> Vec<String> {
+    let replies = [
+        json!({
+            "characters": [
+                {
+                    "ref": "new1",
+                    "name": name("the keeper", None, None, None, None),
+                    "aliases": [],
+                    "evidence": "At dusk the keeper climbed to the lamp.",
+                },
+                {
+                    "ref": "new2",
+                    "name": name("Pip", Some("Pip"), None, None, None),
+                    "aliases": [],
+                    "evidence": "Pip was already on the rail, shouting at the sea.",
+                },
+            ],
+            "relations": [relation(
+                "new1",
+                "new2",
+                "owns",
+                "her gull",
+                "The keeper fed Pip, her gull, from her own plate.",
+            )],
+            "same_as": [],
+        }),
+        json!({
+            "characters": [
+                {
+                    "ref": "c1",
+                    "name": name("Ada Marsh", Some("Ada"), Some("Marsh"), None, None),
+                    "aliases": [],
+                    "evidence": "The letter was addressed to Ada Marsh.",
+                },
+                {
+                    "ref": "new1",
+                    "name": name("the stranger", None, None, None, None),
+                    "aliases": [],
+                    "evidence": "On the jetty stood the stranger, his coat dripping.",
+                },
+            ],
+            "relations": [relation(
+                "c1",
+                "new1",
+                "acquaintance",
+                "met on the jetty",
+                "Ada nodded to the stranger, and he nodded back.",
+            )],
+            "same_as": [],
+        }),
+        json!({
+            "characters": [
+                {
+                    "ref": "new1",
+                    "name": name("Tom Reed", Some("Tom"), Some("Reed"), None, None),
+                    "aliases": [],
+                    "evidence": "The harbour list had one name for the evening boat: Tom Reed.",
+                },
+                {
+                    "ref": "c1",
+                    "name": name("Ada Marsh", Some("Ada"), Some("Marsh"), None, None),
+                    "aliases": [name("Mrs. Marsh", None, Some("Marsh"), Some("Mrs."), Some("female"))],
+                    "evidence": "Good night, Mrs. Marsh, said the boy from the boat.",
+                },
+            ],
+            "relations": [],
+            "same_as": [{
+                "ref": "new1",
+                "other": "c3",
+                "evidence": "The stranger took off his hat, and it was Tom Reed.",
+            }],
+        }),
+    ];
+    replies.iter().map(Value::to_string).collect()
+}
+
+/// A name as a reply writes it: its text, the given name, surname and title it labels, and the sex the title
+/// states.
+pub fn name(
+    text: &str,
+    given: Option<&str>,
+    surname: Option<&str>,
+    title: Option<&str>,
+    title_sex: Option<&str>,
+) -> Value {
+    json!({ "text": text, "given": given, "surname": surname, "title": title, "title_sex": title_sex })
+}
+
+/// A relation item of a reply.
+pub fn relation(from: &str, to: &str, kind: &str, note: &str, evidence: &str) -> Value {
+    json!({ "from": from, "to": to, "kind": kind, "note": note, "evidence": evidence })
 }
 
 /// A book's table of contents, as [`book`] writes it.
@@ -250,4 +349,77 @@ pub fn chapter_text(number: u32, document: u32, blocks: &[&str]) -> ChapterText 
             .map(|(block, text)| PlacedBlock { at: Position { document, block }, text: (*text).into() })
             .collect(),
     }
+}
+
+/// The roster after three invented chapters run through [`check`] (chapter 1 introduces Bren Holt and Old Sal,
+/// his grandmother, with a `family` relation between them; chapter 2 introduces Mira; chapter 3 lists Mira
+/// again), with chapter 4, whose text names only Old Sal.
+pub fn relevant_roster() -> (Roster, ChapterText) {
+    let chapters = [
+        (
+            chapter_text(
+                1,
+                1,
+                &[
+                    "Bren Holt hauled the boat up the shingle.",
+                    "Old Sal sat on the sea wall, mending nets.",
+                    "She was his grandmother, and had taught him every knot he knew.",
+                ],
+            ),
+            json!({
+                "characters": [
+                    {
+                        "ref": "bren",
+                        "name": name("Bren Holt", Some("Bren"), Some("Holt"), None, None),
+                        "aliases": [],
+                        "evidence": "Bren Holt hauled the boat up the shingle",
+                    },
+                    {
+                        "ref": "sal",
+                        "name": name("Old Sal", Some("Sal"), None, None, None),
+                        "aliases": [],
+                        "evidence": "Old Sal sat on the sea wall",
+                    },
+                ],
+                "relations": [relation("sal", "bren", "family", "his grandmother", "She was his grandmother")],
+                "same_as": [],
+            }),
+        ),
+        (
+            chapter_text(2, 2, &["Mira came down from the lighthouse with a lantern."]),
+            json!({
+                "characters": [{
+                    "ref": "mira",
+                    "name": name("Mira", Some("Mira"), None, None, None),
+                    "aliases": [],
+                    "evidence": "Mira came down from the lighthouse",
+                }],
+                "relations": [],
+                "same_as": [],
+            }),
+        ),
+        (
+            chapter_text(3, 3, &["Mira counted the boats in the harbour twice."]),
+            json!({
+                "characters": [{
+                    "ref": "c3",
+                    "name": name("Mira", Some("Mira"), None, None, None),
+                    "aliases": [],
+                    "evidence": "Mira counted the boats in the harbour",
+                }],
+                "relations": [],
+                "same_as": [],
+            }),
+        ),
+    ];
+    let mut roster = Roster::new();
+    for (chapter, reply) in &chapters {
+        let outcome = check(&mut roster, chapter, reply);
+        // Every item kept, so the roster is the one this function says it is.
+        let items: usize =
+            ["characters", "relations", "same_as"].map(|key| reply[key].as_array().unwrap().len()).iter().sum();
+        assert!(outcome.rejected.is_empty(), "{:?}", outcome.rejected);
+        assert_eq!(outcome.kept as usize, items);
+    }
+    (roster, chapter_text(4, 4, &["Old Sal mended the last of the nets alone."]))
 }

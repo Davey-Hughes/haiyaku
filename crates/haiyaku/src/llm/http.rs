@@ -140,7 +140,7 @@ impl Server {
         }
     }
 
-    fn endpoint(&self) -> String {
+    fn chat_url(&self) -> String {
         let path = match self.api {
             Api::Ollama => "/api/chat",
             Api::OpenAi => "/chat/completions",
@@ -198,9 +198,13 @@ impl Backend for Server {
         &self.model
     }
 
+    fn endpoint(&self) -> &str {
+        &self.base
+    }
+
     fn call(&self, request: &Request<'_>) -> Result<Reply> {
         let start = Instant::now();
-        let url = self.endpoint();
+        let url = self.chat_url();
         let fail = |cause: String| Error::Model(format!("{} at {url}: {cause}", self.name()));
         let reply = self.post(&url, &self.body(request)).map_err(fail)?;
         let raw = self.content(&reply).map_err(fail)?;

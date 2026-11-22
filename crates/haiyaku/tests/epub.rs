@@ -260,6 +260,28 @@ fn a_picture_in_the_spine_keeps_its_place() {
 }
 
 #[test]
+fn an_ncx_is_found_by_its_media_type_in_any_case_and_with_parameters() {
+    let dir = TempDir::new().unwrap();
+    // The spine names no NCX, so only the media type finds it.
+    let inside = r#"<metadata/>
+<manifest>
+  <item id="c1" href="c1.xhtml" media-type="application/xhtml+xml"/>
+  <item id="c2" href="c2.xhtml" media-type="application/xhtml+xml"/>
+  <item id="contents" href="toc.ncx" media-type="application/X-DTBNCX+XML; charset=utf-8"/>
+</manifest>
+<spine><itemref idref="c1"/><itemref idref="c2"/></spine>"#;
+    let (one, two) = (xhtml("Chapter 1", &["The lamp."]), xhtml("Chapter 2", &["The jetty."]));
+    let toc = ncx(&nav_map(&[("Chapter 1", "c1.xhtml"), ("Chapter 2", "c2.xhtml")]));
+    let path = with_package(
+        &dir,
+        "typed-ncx.epub",
+        inside,
+        &[("OEBPS/c1.xhtml", one.as_bytes()), ("OEBPS/c2.xhtml", two.as_bytes()), ("OEBPS/toc.ncx", toc.as_bytes())],
+    );
+    assert_eq!(Book::open(&path).unwrap().toc, [entry("Chapter 1", 0), entry("Chapter 2", 1)]);
+}
+
+#[test]
 fn a_spine_item_of_a_text_or_unknown_media_type_that_is_utf8_is_read() {
     let dir = TempDir::new().unwrap();
     let inside = r#"<metadata/>

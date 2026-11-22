@@ -165,6 +165,40 @@ fn an_unclosed_heading_ends_where_a_block_opens_after_its_text() {
 }
 
 #[test]
+fn an_empty_heading_left_open_ends_where_a_block_closes() {
+    assert_eq!(in_body("<div><h1></div><p>First.</p>"), [paragraph("First.")]);
+    assert_eq!(
+        in_body("<section><h2>\n</section><p>First.</p><p>Second.</p>"),
+        [paragraph("First."), paragraph("Second.")]
+    );
+    // The block that closes was open before the heading, even with a block left unclosed inside the heading.
+    assert_eq!(in_body("<div><h1><p></div><p>First.</p>"), [paragraph("First.")]);
+    // A line break's close is no block's: the heading goes on to its text.
+    assert_eq!(in_body("<h1><br></br>Title</h1><p>First.</p>"), [heading("Title"), paragraph("First.")]);
+}
+
+#[test]
+fn a_heading_left_open_ends_where_a_block_around_it_closes() {
+    assert_eq!(
+        in_body("<div><h1>Chapter 1</div>It was a dark night.<p>Next</p>"),
+        [heading("Chapter 1"), paragraph("It was a dark night."), paragraph("Next")]
+    );
+    assert_eq!(
+        in_body("<section><div><h2>Part</div>The lamp was lit.</section><p>Next</p>"),
+        [heading("Part"), paragraph("The lamp was lit."), paragraph("Next")]
+    );
+}
+
+#[test]
+fn an_empty_block_inside_a_heading_leaves_it_open() {
+    assert_eq!(in_body("<h1><div></div>Title</h1>"), [heading("Title")]);
+    assert_eq!(
+        in_body("<div><h2><p></p>Part<span></span></h2></div><p>Text.</p>"),
+        [heading("Part"), paragraph("Text.")]
+    );
+}
+
+#[test]
 fn a_block_that_opens_before_a_headings_text_is_part_of_it() {
     assert_eq!(
         in_body(r#"<h1 class="ch"><div>Chapter One</div></h1><p>Text.</p>"#),
