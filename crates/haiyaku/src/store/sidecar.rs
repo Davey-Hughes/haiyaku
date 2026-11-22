@@ -10,6 +10,7 @@ use rusqlite::backup::{Backup, StepResult};
 use rusqlite::{Connection, OpenFlags, ffi};
 use sha2::{Digest, Sha256};
 
+use super::book::check_hash;
 use super::{SCHEMA_VERSION, migrate, read_book, schema_version, write_book};
 use crate::log::BookLog;
 use crate::{Error, Result};
@@ -71,16 +72,19 @@ pub fn export_book(conn: &Connection, sha256: &str, path: &Path) -> Result<()> {
 ///
 /// Nothing is written to `conn` on any of them.
 ///
+/// - [`Error::Invalid`] when `expected_sha256` is not 64 lowercase hex digits, the one form [`write_book`]
+///   stores a hash in; when the file is a database with no haiyaku tables, or its version table has lost
+///   its row; and when its log breaks a rule of [`write_book`].
 /// - [`Error::HashMismatch`] unless the sidecar holds exactly one book and its `sha256` is
-///   `expected_sha256`, in whichever letter case the caller has it: the sidecar is for another edition of
-///   the book. `expected` is the hash in lowercase, and `found` is that book's hash, or `no book`, or how
-///   many books there are.
+///   `expected_sha256`: the sidecar is for another edition of the book. `found` is that book's hash, or
+///   `no book`, or how many books there are.
 /// - [`Error::SchemaTooNew`] when a later haiyaku wrote the sidecar.
-/// - [`Error::Invalid`] when the file is a database with no haiyaku tables, or its version table has lost
-///   its row, or its log breaks a rule of [`write_book`].
 /// - [`Error::ForeignKeysOff`] when `PRAGMA foreign_keys` is off on `conn`.
 /// - [`Error::Sqlite`] when the file is missing or is not a SQLite database, and when `conn` refuses a row.
 pub fn import_book(conn: &mut Connection, sidecar: &Path, expected_sha256: &str) -> Result<()> {
+    // Every read looks a book up by its hash as given, so a hash taken here in another spelling would
+    // import the book and then find it nowhere.
+    check_hash(expected_sha256)?;
     // Without the create flag a missing file is an error rather than a new, empty database on the share.
     let file =
         Connection::open_with_flags(sidecar, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX)?;
@@ -92,9 +96,7 @@ pub fn import_book(conn: &mut Connection, sidecar: &Path, expected_sha256: &str)
         Ordering::Less => migrated_copy(&file)?,
         Ordering::Equal => file,
     };
-    // A stored hash is in lowercase, and the same hash from another tool may not be: it is still this
-    // book's sidecar.
-    let log = only_book(&source, &expected_sha256.to_ascii_lowercase())?;
+    let log = only_book(&source, expected_sha256)?;
     write_book(conn, &log)
 }
 

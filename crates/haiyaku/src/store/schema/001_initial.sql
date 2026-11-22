@@ -5,7 +5,17 @@
 -- NULL into a primary key that is not a rowid.
 
 CREATE TABLE haiyaku_book (
-    sha256         TEXT NOT NULL PRIMARY KEY CHECK (length(sha256) = 64),
+    -- A text of 64 lowercase hex digits. The hash is compared as text wherever a book is looked up, so it has
+    -- one spelling: in another letter case the same file would be a second book, and a BLOB of the same bytes
+    -- equals no text. length() and GLOB read a text no further than its first NUL, so instr() is what says
+    -- that nothing follows the digits. Not a count of the text's bytes, which is 64 in a UTF-8 database alone,
+    -- and the database is the caller's.
+    sha256         TEXT NOT NULL PRIMARY KEY CHECK (
+        typeof(sha256) = 'text'
+        AND length(sha256) = 64
+        AND instr(sha256, char(0)) = 0
+        AND sha256 NOT GLOB '*[^0-9a-f]*'
+    ),
     title          TEXT NOT NULL,
     language       TEXT NOT NULL,
     backend        TEXT NOT NULL,

@@ -84,6 +84,20 @@ fn round_trip() {
     assert_eq!(read_book(&conn, &keeper().book.sha256).unwrap(), keeper());
 }
 
+// The database is the caller's, and so is the encoding it stores text in.
+#[test]
+fn round_trip_in_a_utf16_database() {
+    let mut conn = Connection::open_in_memory().unwrap();
+    // Before the first table: a database keeps the encoding it was created with.
+    conn.pragma_update(None, "encoding", "UTF-16le").unwrap();
+    conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+    migrate(&conn).unwrap();
+    assert_eq!(conn.pragma_query_value(None, "encoding", |row| row.get::<_, String>(0)).unwrap(), "UTF-16le");
+
+    write_book(&mut conn, &keeper()).unwrap();
+    assert_eq!(read_book(&conn, &keeper().book.sha256).unwrap(), keeper());
+}
+
 #[test]
 fn appeared_round_trips() {
     let mut conn = db();

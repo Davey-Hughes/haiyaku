@@ -85,7 +85,8 @@ pub fn write_book(conn: &mut Connection, log: &BookLog) -> Result<()> {
 ///
 /// All of it is read from one state of the database: a book that another connection rewrites during the call
 /// comes back as it was or as it has become, never as some of each. Inside a transaction of the caller's,
-/// which stays open, that state is the transaction's.
+/// which stays open, that state is the transaction's. On a connection outside a transaction, the read is
+/// refused with [`Error::Sqlite`] while a write statement of the caller's is still in progress on it.
 ///
 /// # Errors
 ///
@@ -211,7 +212,7 @@ fn is_stored(conn: &Connection, log: &BookLog) -> Result<bool> {
 
 /// The hash is the book's key in every table and is compared as text, so it has one spelling: in another
 /// letter case the same file would be stored as a second book, and looked up, not found.
-fn check_hash(sha256: &str) -> Result<()> {
+pub(super) fn check_hash(sha256: &str) -> Result<()> {
     if sha256.len() == 64 && sha256.bytes().all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f')) {
         Ok(())
     } else {

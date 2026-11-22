@@ -80,7 +80,7 @@ The version lives in `haiyaku_schema(version INTEGER NOT NULL)`, one row. `migra
 
 | Table | Columns | Keys and checks |
 | --- | --- | --- |
-| `haiyaku_book` | `sha256 TEXT`, `title`, `language`, `backend`, `model TEXT`, `prompt_version INTEGER`, `extracted_at TEXT` (RFC 3339, UTC) | PK `sha256`; `length(sha256) = 64`; all NOT NULL |
+| `haiyaku_book` | `sha256 TEXT`, `title`, `language`, `backend`, `model TEXT`, `prompt_version INTEGER`, `extracted_at TEXT` (RFC 3339, UTC) | PK `sha256`; a text of 64 lowercase hex digits (`typeof(sha256) = 'text' AND length(sha256) = 64 AND instr(sha256, char(0)) = 0 AND sha256 NOT GLOB '*[^0-9a-f]*'`); all NOT NULL |
 | `haiyaku_chapter` | `book`, `number INTEGER` (1-based, reading order), `toc_entry INTEGER` (index in the table of contents), `title TEXT`, `seconds REAL`, `cost_usd REAL NULL`, `kept INTEGER`, `rejected INTEGER` | PK `(book, number)` |
 | `haiyaku_document` | `book`, `ordinal INTEGER` (spine order from 0), `path TEXT`, `chapter INTEGER NULL` | PK `(book, ordinal)`; UNIQUE `(book, path)`; FK `(book, chapter)` → chapter |
 | `haiyaku_entity` | `book`, `id TEXT`, `kind TEXT` | PK `(book, id)`; `kind IN ('character')` |

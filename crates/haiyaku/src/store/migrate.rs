@@ -24,6 +24,11 @@ const _: () = assert!(MIGRATIONS.len() == SCHEMA_VERSION as usize);
 /// caller's, as in a step of the caller's own migrations, the changes are made under a savepoint: they commit
 /// or roll back with that transaction, and a failure undoes them alone and leaves the caller's writes.
 ///
+/// Such a transaction should be begun with `BEGIN IMMEDIATE`. Outside a transaction, a call that finds another
+/// connection writing waits for it, as long as the connection's busy timeout allows. In a deferred
+/// transaction that has read the database before the call writes, as the call itself does wherever a version
+/// is stored, SQLite refuses the write at once with its busy error instead.
+///
 /// `PRAGMA foreign_keys` stays as the caller set it, and `PRAGMA user_version`, which is the caller's, is
 /// never read or written.
 ///
@@ -68,8 +73,12 @@ fn migrate_with(conn: &Connection, migrations: &[&str]) -> Result<()> {
         return Ok(());
     }
     // Immediate takes the write lock before `apply_pending` reads the version again. Of two connections
-    // migrating one file the second then waits and finds nothing pending; a deferred transaction would let
-    // both read the old version and run the same migration.
+    // migrating one file, each outside a transaction, the second then waits for the first and finds nothing
+    // pending. SQLite makes no transaction wait for a writer once it has read, and refuses its write at
+    // once: a deferred transaction, in which both would read the old version first, fails the second
+    // connection where an immediate one makes it wait. A caller's own deferred transaction around this call
+    // is in that place once it has read, as `pending` above has for it wherever a version is stored, which
+    // is why `migrate` asks for BEGIN IMMEDIATE.
     in_transaction(conn, TransactionBehavior::Immediate, |conn| apply_pending(conn, migrations, newest))
 }
 

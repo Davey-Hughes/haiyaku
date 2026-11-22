@@ -88,13 +88,17 @@ fn export_holds_the_one_book_and_no_series() {
 }
 
 #[test]
-fn import_takes_the_expected_hash_in_any_letter_case() {
+fn import_refuses_an_expected_hash_that_is_not_64_lowercase_hex_digits() {
     let dir = dir();
     let sidecar = exported(dir.path());
 
     let mut target = db();
-    import_book(&mut target, &sidecar, &hash().to_uppercase()).unwrap();
-    assert_eq!(read_book(&target, &hash()).unwrap(), keeper());
+    // The first is the sidecar's own hash in the other letter case.
+    for expected in [hash().to_uppercase(), "a".repeat(63), format!("{}g", "a".repeat(63))] {
+        let result = import_book(&mut target, &sidecar, &expected);
+        assert!(matches!(&result, Err(Error::Invalid(why)) if why.contains("64 lowercase hex digits")), "{result:?}");
+    }
+    assert_no_book(&target);
 }
 
 #[test]

@@ -1,10 +1,12 @@
 //! Series, their reading orders and the links between the books of an order, written to the database and
 //! read back; and how much of a book a reader at one of its documents has finished.
 
+use std::collections::HashSet;
+
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 use super::book::unknown;
-use super::require_foreign_keys;
+use super::{in_snapshot, require_foreign_keys};
 use crate::fold::EntityKey;
 use crate::log::Position;
 use crate::{Error, Result};
@@ -90,11 +92,23 @@ pub fn put_series(conn: &mut Connection, series: &Series) -> Result<()> {
 
 /// The series as [`put_series`] stored it, its orders by rank.
 ///
+/// All of it is read from one state of the database: a series that another connection replaces during the
+/// call comes back as it was or as it has become, never as some of each. Inside a transaction of the
+/// caller's, which stays open, that state is the transaction's. On a connection outside a transaction, the
+/// read is refused with [`Error::Sqlite`] while a write statement of the caller's is still in progress on it.
+///
 /// # Errors
 ///
 /// [`Error::NotFound`] naming `series <name>` when no such series is stored; [`Error::Sqlite`] when the
 /// database cannot be read.
 pub fn read_series(conn: &Connection, name: &str) -> Result<Series> {
+    // One snapshot, because the orders and the books of each are separate statements: with the series
+    // replaced between them, an order it no longer has would come back with no book, or with the books
+    // another order now has under its name.
+    in_snapshot(conn, |conn| series_in_snapshot(conn, name))
+}
+
+fn series_in_snapshot(conn: &Connection, name: &str) -> Result<Series> {
     let title = conn
         .query_row("SELECT title FROM haiyaku_series WHERE name = ?1", [name], |row| row.get(0))
         .optional()?
@@ -113,17 +127,25 @@ pub fn read_series(conn: &Connection, name: &str) -> Result<Series> {
 /// # Errors
 ///
 /// [`Error::ForeignKeysOff`] when `PRAGMA foreign_keys` is off on `conn`; [`Error::NotFound`] naming
-/// `order <order> of series <series>` when no such order is stored; [`Error::Invalid`] when a link's later
-/// book does not come after its earlier book in the order, which covers a book the order does not hold, and
-/// when a link's `at` names a document the later book does not have or one that is not in the link's `chapter`,
-/// when the later book has not introduced the later character by the end of that chapter, and when the
-/// earlier book never introduces the earlier one, which covers an entity its book does not have;
-/// [`Error::Sqlite`] when the schema refuses a row, as it does a second link for the same later character,
-/// and when `conn` is already inside a transaction.
+/// `order <order> of series <series>` when no such order is stored; [`Error::Invalid`] when two of the links
+/// are for the same later character, when a link's later book does not come after its earlier book in the
+/// order, which covers a book the order does not hold, and when a link's `at` names a document the later book
+/// does not have or one that is not in the link's `chapter`, when the later book has not introduced the later
+/// character by the end of that chapter, and when the earlier book never introduces the earlier one, which
+/// covers an entity its book does not have; [`Error::Sqlite`] when the schema refuses a row, and when `conn`
+/// is already inside a transaction.
 pub fn put_links(conn: &mut Connection, series: &str, order: &str, links: &[Link]) -> Result<()> {
     // The checks below refuse a link to a book, a document or an entity that is not there. The foreign keys
     // stand behind them: with the keys on, a case the checks miss is an error and not a dangling link.
     require_foreign_keys(conn)?;
+    // The schema would refuse the second as well, with an error that names its columns and not the character.
+    let mut linked = HashSet::new();
+    if let Some(Link { later, .. }) = links.iter().find(|link| !linked.insert(&link.later)) {
+        return Err(Error::Invalid(format!(
+            "order {order} of series {series} is given two links for {} of book {}",
+            later.id, later.book
+        )));
+    }
     // Immediate, so that the order the links are checked against is the order they are stored under: a
     // deferred transaction would let another connection replace the series between the check and the insert.
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -189,12 +211,24 @@ pub fn put_links(conn: &mut Connection, series: &str, order: &str, links: &[Link
 /// The links of one reading order, in the order a reader comes to them: by the later book's place in the
 /// order, then by where in it the link holds.
 ///
+/// The order and its links are read from one state of the database: for a series that another connection
+/// replaces during the call, they are the links the order had, or the order is not found. Inside a
+/// transaction of the caller's, which stays open, that state is the transaction's. On a connection outside a
+/// transaction, the read is refused with [`Error::Sqlite`] while a write statement of the caller's is still in
+/// progress on it.
+///
 /// # Errors
 ///
 /// [`Error::NotFound`] naming `order <order> of series <series>` when no such order is stored;
 /// [`Error::Invalid`] when a link was made in a way this build does not know; [`Error::Sqlite`] when the
 /// database cannot be read.
 pub fn read_links(conn: &Connection, series: &str, order: &str) -> Result<Vec<Link>> {
+    // One snapshot, because the order is looked for in one statement and its links are read in another:
+    // with the series replaced between them, an order that is gone would come back as one without links.
+    in_snapshot(conn, |conn| links_in_snapshot(conn, series, order))
+}
+
+fn links_in_snapshot(conn: &Connection, series: &str, order: &str) -> Result<Vec<Link>> {
     require_order(conn, series, order)?;
     let mut stmt = conn.prepare(
         "SELECT l.later_book, l.later_entity, l.earlier_book, l.earlier_entity, l.method, l.quote,
@@ -233,11 +267,24 @@ pub fn read_links(conn: &Connection, series: &str, order: &str) -> Result<Vec<Li
 /// their documents, each with a document, so this is also the number of the last chapter finished, and 0
 /// before the end of the first.
 ///
+/// The document and the chapters are read from one state of the database: for a book that another connection
+/// rewrites during the call, the count is the one of the log as it was or as it has become. Inside a
+/// transaction of the caller's, which stays open, that state is the transaction's. On a connection outside a
+/// transaction, the read is refused with [`Error::Sqlite`] while a write statement of the caller's is still in
+/// progress on it.
+///
 /// # Errors
 ///
 /// [`Error::NotFound`] naming `document <path> in book <sha256>` when the book has no document at that path,
 /// or `book <sha256>` when the book is not stored at all; [`Error::Sqlite`] when the database cannot be read.
 pub fn finished_chapters(conn: &Connection, book: &str, document: &str) -> Result<u32> {
+    // One snapshot, because the document's place and the chapters that end before it are separate
+    // statements: with the book rewritten between them, the place in the old log would be counted against
+    // the chapters of the new one, and where those start earlier that counts a chapter the reader is still in.
+    in_snapshot(conn, |conn| finished_in_snapshot(conn, book, document))
+}
+
+fn finished_in_snapshot(conn: &Connection, book: &str, document: &str) -> Result<u32> {
     let ordinal: Option<u32> = conn
         .query_row("SELECT ordinal FROM haiyaku_document WHERE book = ?1 AND path = ?2", [book, document], |row| {
             row.get(0)

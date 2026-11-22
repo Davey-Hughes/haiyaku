@@ -244,6 +244,58 @@ fn relation_to_an_entity_never_introduced_is_refused() {
     assert_eq!(count(&conn, "haiyaku_relation"), 1);
 }
 
+/// A new database that stores its text in `encoding`, migrated.
+fn migrated_in(encoding: &str) -> Connection {
+    let conn = Connection::open_in_memory().unwrap();
+    // Before the first table: a database keeps the encoding it was created with.
+    conn.pragma_update(None, "encoding", encoding).unwrap();
+    migrate(&conn).unwrap();
+    assert_eq!(conn.pragma_query_value(None, "encoding", |row| row.get::<_, String>(0)).unwrap(), encoding);
+    conn
+}
+
+// `write_book` refuses such a hash before the schema sees it, so the rows here are written past it. In both
+// encodings: the database is the caller's, and a check that measures the stored text holds in one alone.
+#[test]
+fn book_hash_that_is_not_64_lowercase_hex_digits_is_refused() {
+    for encoding in ["UTF-8", "UTF-16le"] {
+        book_hash_is_checked(&migrated_in(encoding), encoding);
+    }
+}
+
+fn book_hash_is_checked(conn: &Connection, encoding: &str) {
+    let insert =
+        "INSERT INTO haiyaku_book VALUES (?1, 'The Lamp', 'en', 'recorded', 'none', 1, '2026-01-03T00:00:00Z')";
+    let hashes = [
+        "c".repeat(63),
+        "c".repeat(65),
+        "C".repeat(64),
+        KEEPER.to_uppercase(),
+        format!("{}g", "c".repeat(63)),
+        // 64 characters that are not hex digits.
+        "é".repeat(64),
+        String::new(),
+        // More after the 64 digits, behind a NUL: length() and GLOB read a text no further than that.
+        format!("{}\0", "c".repeat(64)),
+        format!("{}\0g", "c".repeat(64)),
+        // 64 characters with a NUL among them, and no hex digits after it.
+        format!("ccc\0{}", "C".repeat(60)),
+        format!("{}\0", "c".repeat(63)),
+    ];
+    let check = Some(rusqlite::ffi::SQLITE_CONSTRAINT_CHECK);
+    for sha256 in hashes {
+        let refused = conn.execute(insert, [&sha256]).map_err(|e| e.sqlite_error().map(|e| e.extended_code));
+        assert_eq!(refused, Err(check), "{encoding}: {sha256:?}");
+    }
+    // The 64 digits as a BLOB, which a lookup by the hash as text would never find.
+    let blob = conn.execute(insert, ["c".repeat(64).into_bytes()]);
+    assert_eq!(blob.map_err(|e| e.sqlite_error().map(|e| e.extended_code)), Err(check), "{encoding}: a BLOB");
+    assert_eq!(count(conn, "haiyaku_book"), 0, "{encoding}");
+    // Every digit the check has to let through.
+    let taken = conn.execute(insert, ["0123456789abcdef".repeat(4)]);
+    assert_eq!(taken, Ok(1), "{encoding}");
+}
+
 #[test]
 fn deleting_events_takes_their_child_rows() {
     let conn = filled();

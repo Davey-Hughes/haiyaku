@@ -26,7 +26,9 @@ pub enum Scope {
 ///
 /// The position, the series, the links and the events are all read from one state of the database: a book
 /// that another connection rewrites during the call is in the cast as it was or as it has become, never as
-/// some of each. Inside a transaction of the caller's, which stays open, that state is the transaction's.
+/// some of each. Inside a transaction of the caller's, which stays open, that state is the transaction's. On
+/// a connection outside a transaction, the read is refused with [`Error::Sqlite`] while a write statement of
+/// the caller's is still in progress on it.
 ///
 /// # Errors
 ///

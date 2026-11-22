@@ -400,6 +400,23 @@ fn link_from_a_chapter_before_the_later_character_is_introduced_is_invalid() {
 }
 
 #[test]
+fn two_links_for_one_later_character_are_invalid() {
+    let mut conn = library();
+    let (first, second) = books();
+    // The second book's Ada is the first's Ada already, and here the first's Tom as well.
+    let twice = Link { earlier: key(&first, "tom"), ..keepers_links()[0].clone() };
+    let mut links = keepers_links();
+    links.push(twice);
+
+    let refused = put_links(&mut conn, "keepers", "published", &links);
+    assert!(
+        matches!(&refused, Err(Error::Invalid(why)) if why.contains(&format!("two links for ada of book {second}"))),
+        "{refused:?}"
+    );
+    assert_eq!(read_links(&conn, "keepers", "published").unwrap(), keepers_links());
+}
+
+#[test]
 fn put_links_replaces_one_orders_links() {
     let mut conn = library();
     let (first, second) = books();
