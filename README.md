@@ -10,8 +10,9 @@ It is meant to work as a Rust library and as a program of its own. taiyaku,
 the manga and book reader, will use the library; the program will also cover
 shows through their subtitles.
 
-**Status:** a spike. Nothing here is usable yet. [docs/status.md](docs/status.md)
-says where the project stands.
+**Status:** the core crate exists: the schema, the store, the fold and the
+sidecars. There is no extraction and no program yet.
+[docs/status.md](docs/status.md) says where the project stands.
 
 ## License
 

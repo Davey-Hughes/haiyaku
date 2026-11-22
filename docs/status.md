@@ -7,8 +7,10 @@ Where haiyaku stands, what is decided, and what comes next. Updated 2026-11-21.
 The spike in `spike/` has run on Sorcerer's Stone in English and Korean.
 Claude Sonnet produced consistent, grounded character events at 12 s a
 chapter; gemma4 12B did not, so Claude is the backend while building. The findings are in [notes.md](notes.md).
-Nothing outside `spike/` exists yet. The library design is approved and
-the first of three implementation plans is written.
+The core crate exists in `crates/haiyaku`: the schema, the store, the fold
+and the sidecars, built from
+[the core plan](superpowers/plans/2026-11-21-haiyaku-core.md). There is no
+extraction yet.
 
 ## Decided
 
@@ -46,10 +48,8 @@ the first of three implementation plans is written.
 
 ## Next
 
-1. Plan 1, the core crate (schema, store, fold, sidecars):
-   [the core plan](superpowers/plans/2026-11-21-haiyaku-core.md).
-2. Plan 2, extraction (EPUB reader, model backends, `extract`, `show`).
-3. Plan 3, series linking, with the English and Korean acceptance runs.
+1. Plan 2, extraction (EPUB reader, model backends, `extract`, `show`).
+2. Plan 3, series linking, with the English and Korean acceptance runs.
 
 ## Open
 
@@ -61,3 +61,8 @@ the first of three implementation plans is written.
 - O4: If taiyaku's server ever runs extraction itself, it cannot use the
   desktop's `claude` login: it needs an Anthropic API key or a model server it
   can reach. Decide when it comes up; the design must not rule it out.
+- O5: cargo-deny is not installed on the desktop, so `scripts/check-all.sh`
+  stops at its last step there and `deny.toml` is first checked by CI's
+  advisories job.
+- O6: Importing rows from a sidecar at an older schema version cannot be
+  tested until a version 2 migration exists; that migration adds the test.

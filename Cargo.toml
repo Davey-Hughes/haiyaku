@@ -1,0 +1,24 @@
+[workspace]
+resolver = "3"
+members = ["crates/haiyaku"]
+# `spike/` keeps its own lockfile and none of the gates, so its dependencies
+# and its standards cannot reach the real crate or CI.
+exclude = ["spike"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+# taiyaku's, since taiyaku builds haiyaku as a dependency: a higher floor here
+# would raise taiyaku's. CI checks every target with every feature at this
+# version, and clippy's MSRV-gated lints read it.
+rust-version = "1.91"
+license = "GPL-3.0-or-later"
+repository = "https://forge.daveynet.xyz/davey/haiyaku"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+todo = "warn"
+dbg_macro = "warn"

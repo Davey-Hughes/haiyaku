@@ -1,0 +1,30 @@
+# cargo-deny's configuration. `.forgejo/workflows/advisories.yml` runs the
+# advisories check against it, and so does the last line of
+# `scripts/check-all.sh`, checking the same graph CI does:
+#
+#   cargo deny --locked check advisories
+#
+# **Only that check is configured here.** A bare `cargo deny check` runs all
+# four, and licenses, which this file does not configure, then rejects every
+# dependency.
+#
+# `[graph]` turns every feature on, the feature set `ci.yml` lints and tests
+# under, so `bundled` and the SQLite build it brings are in the graph. It is
+# set here rather than on the command line so the local command and CI check
+# the same graph.
+#
+# `[advisories]` keeps cargo-deny 0.20.2's defaults but one: a vulnerability,
+# notice or unmaintained advisory fails the check, **and so does an unsound one
+# on any crate**. That is `unsound = "all"`. The default, `"workspace"`, drops
+# unsound advisories on transitive crates without even a note. A yanked crate
+# only warns. How to accept a finding, by an `ignore` entry or for everything at
+# once, is in the workflow's header.
+#
+# `spike/Cargo.lock` is not checked. The spike is a throwaway outside the
+# workspace and never shipped.
+
+[graph]
+all-features = true
+
+[advisories]
+unsound = "all"

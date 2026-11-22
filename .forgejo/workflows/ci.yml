@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+# The job clones with git rather than with actions/checkout. checkout is a
+# JavaScript action, and a JS action needs a node inside the job's container to
+# execute. rust:1-trixie carries none and this runner does not inject one, so a
+# job combining `container:` with any JS action dies before its first step.
+#
+# The clone is authenticated because the instance requires sign-in for all
+# content, so an anonymous fetch is refused even for a public repository. The
+# runner supplies FORGEJO_TOKEN for exactly this, and FORGEJO_SERVER_URL is the
+# runner's own view of the forge, an address on its container network, rather
+# than the public hostname.
+#
+# `timeout-minutes` bounds what no test can: a download that stalls, or a
+# build that never finishes.
+#
+# No build volumes, so every run compiles from nothing: each runner's
+# `container.valid_volumes` admits only names matching `taiyaku-ci-*`.
+#
+# scripts/check-all.sh mirrors the steps from `Formatting` to `Test`. When one
+# changes here, change it there.
+
+jobs:
+  check:
+    runs-on: docker
+    timeout-minutes: 10
+    container:
+      image: rust:1-trixie
+    steps:
+      - name: Checkout
+        env:
+          TOKEN: ${{ secrets.FORGEJO_TOKEN }}
+        run: |
+          host="${FORGEJO_SERVER_URL#http://}"; host="${host#https://}"
+          scheme="${FORGEJO_SERVER_URL%%://*}"
+          git init -q .
+          git remote add origin "${scheme}://x-access-token:${TOKEN}@${host}/${FORGEJO_REPOSITORY}.git"
+          git fetch -q --depth 1 origin "$FORGEJO_REF"
+          git checkout -q FETCH_HEAD
+      - name: Formatting
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      # `bundled` is the only feature and is in `default`, so this run lints
+      # the same code as the one above. It is kept so that a feature added
+      # outside `default` is linted both on and off from the commit that adds
+      # it.
+      - name: Clippy (default features)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      # `broken_intra_doc_links` only. An unresolved `[`name`]` is always a
+      # defect, and a rename is how it happens.
+      - name: Doc links
+        run: cargo doc --workspace --no-deps --all-features
+        env:
+          RUSTDOCFLAGS: -D rustdoc::broken_intra_doc_links
+      - name: Test
+        run: cargo test --workspace --all-features
+      # Every other step compiles with rust-toolchain.toml's pin, and clippy's
+      # `incompatible_msrv` skips dependencies and `#[test]` or `#[cfg(test)]` code,
+      # so either could need more than `rust-version` promises and stay green
+      # without this. taiyaku builds haiyaku at that version, so a floor that
+      # crept up here would break taiyaku's own check. `.0` because cargo reads
+      # "1.91" as 1.91.0, while rustup resolves the channel `1.91` to that
+      # series' newest patch release. Host target only, and no test runs at
+      # this version.
+      - name: Check at the declared Rust version
+        run: |
+          declared=$(sed -n '/^\[workspace\.package\]/,/^\[/s/^rust-version *= *"\([^"]*\)".*/\1/p' Cargo.toml)
+          case "$declared" in
+            "" | *[!0-9.]* | .* | *. | *..* | *.*.*.*) msrv= ;;
+            *.*.*) msrv=$declared ;;
+            *.*) msrv=$declared.0 ;;
+            *) msrv= ;;
+          esac
+          if [ -z "$msrv" ]; then
+            echo "error: no usable rust-version under [workspace.package] in Cargo.toml (read: '$declared')" >&2
+            exit 1
+          fi
+          rustup toolchain install "$msrv" --profile minimal
+          cargo "+$msrv" check --workspace --all-targets --all-features --locked
