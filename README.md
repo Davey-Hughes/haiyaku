@@ -10,7 +10,8 @@ It is meant to work as a Rust library and as a program of its own. taiyaku,
 the manga and book reader, will use the library; the program will also cover
 shows through their subtitles.
 
-**Status:** early development. Nothing here is usable yet.
+**Status:** a spike. Nothing here is usable yet. [docs/status.md](docs/status.md)
+says where the project stands.
 
 ## License
 
