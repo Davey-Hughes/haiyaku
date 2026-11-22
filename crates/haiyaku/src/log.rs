@@ -125,6 +125,10 @@ pub enum EventBody {
     Relation { from: String, to: String, kind: RelationKind, note: String },
     /// Two entities turn out to be one: `other` is `entity`.
     SameAs { entity: String, other: String },
+    /// The chapter shows that the relation of `kind` between the two, recorded before this event, was never
+    /// true; for a [directed](RelationKind::directed) kind it runs from `from` to `to`, for the others the two
+    /// are in no order.
+    Overturned { from: String, to: String, kind: RelationKind, note: String },
 }
 
 /// A name as the text gives it, and the parts of it that could be told apart.
@@ -207,8 +211,8 @@ impl RelationKind {
         matches!(self, Self::Mentor | Self::Serves | Self::Owns)
     }
 
-    /// The name stored in SQL, one of those the `CHECK` of `haiyaku_relation` lists: a name that is not
-    /// there cannot be written.
+    /// The name stored in SQL, one of those the `CHECK`s of `haiyaku_relation` and `haiyaku_overturn` list: a
+    /// name that is not there cannot be written.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Family => "family",

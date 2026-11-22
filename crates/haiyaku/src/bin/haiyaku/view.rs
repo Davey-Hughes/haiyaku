@@ -18,7 +18,8 @@ pub fn page(log: &BookLog, last: u32, at: u32) -> String {
 }
 
 /// Chapter `n`, with its title and counts (`null` for 0, which is no chapter), and the cast after it. A
-/// page holds one book, so a character's id alone names it.
+/// page holds one book, so a character's id alone names it, and a chapter's number alone says where an overturn
+/// was; a fact's `overturned` is `null` for a fact that stands.
 fn step(log: &BookLog, n: u32) -> Value {
     let chapter = log.chapters.iter().find(|chapter| chapter.number == n);
     let Cast { characters, relations } = fold_book(log, n);
@@ -49,6 +50,9 @@ fn step(log: &BookLog, n: u32) -> Value {
                         "quote": fact.quote,
                         "first": fact.first.chapter,
                         "last": fact.last.chapter,
+                        "overturned": fact.overturned.as_ref().map(|overturn| {
+                            json!({ "chapter": overturn.at.chapter, "note": overturn.note, "quote": overturn.quote })
+                        }),
                     })
                 })
                 .collect();

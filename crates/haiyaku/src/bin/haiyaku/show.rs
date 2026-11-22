@@ -63,7 +63,8 @@ pub fn run(args: &Args, db: Option<&Path>, env: Env<'_>) -> Result<(), Failure> 
 
 /// `cast` as lines of text: a `Characters` section, a line each with the name, the other names in
 /// parentheses and the chapters from the first to the last that names the character; then a `Relations`
-/// section, a line per fact with its two ends, its kind and its note.
+/// section, a line per fact with its two ends, its kind and its note, and for a fact a later chapter overturned,
+/// that chapter and the overturn's note in brackets.
 fn draw(cast: &Cast) -> String {
     let names: HashMap<&EntityKey, &str> =
         cast.characters.iter().map(|character| (&character.key, character.name.as_str())).collect();
@@ -91,7 +92,12 @@ fn draw(cast: &Cast) -> String {
                 None => format!("{} - {}", name(&relation.a), name(&relation.b)),
             };
             let note = if fact.note.is_empty() { String::new() } else { format!(", {}", fact.note) };
-            lines.push(format!("  {ends}: {}{note}", fact.kind.as_str()));
+            let overturned = fact.overturned.as_ref().map_or_else(String::new, |overturn| {
+                let overturn_note =
+                    if overturn.note.is_empty() { String::new() } else { format!(": {}", overturn.note) };
+                format!(" [overturned in ch {}{overturn_note}]", overturn.at.chapter)
+            });
+            lines.push(format!("  {ends}: {}{note}{overturned}", fact.kind.as_str()));
         }
     }
     lines.join("\n")

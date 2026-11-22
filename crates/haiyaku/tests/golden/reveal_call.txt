@@ -1,0 +1,36 @@
+You record the characters of a book one chapter at a time, for a reader who has read to the end of this chapter and no further, and you reply with JSON only.
+---
+Chapter 2: Chapter 2
+
+In the morning the post boat left a letter on the landing stage.
+The letter was addressed to Ada Marsh. She had not seen her own name written down in a long time.
+She read it twice on the steps and put it in her apron pocket.
+At noon a squall came in from the west and went out again as quickly, leaving the planks of the jetty shining.
+On the jetty stood the stranger, his coat dripping. He held his hat in both hands and came no nearer.
+Ada nodded to the stranger, and he nodded back. Neither of them said a word.
+Pip flew down and walked twice round the stranger's boots, then went back to the rail.
+
+The reader has just finished this chapter.
+
+Characters so far (ref | name | other names):
+c1 | the keeper |
+c2 | Pip |
+
+Relations so far (from | kind | to | note):
+c1 | owns | c2 | her gull
+
+Read the chapter again. This step looks only for what the chapter reveals or overturns about these characters; another step already recorded what the chapter shows in passing.
+
+relations: a relation between two of these characters that this chapter reveals and that the list above does not hold in any wording, such as a hidden allegiance, a secret act, or a relation of another kind for a pair already listed. Leave out what the chapter only shows in passing.
+
+overturned: a relation in the list above that this chapter shows was not true, such as a character who seemed hostile but was protecting someone. Name it exactly as the list gives it: the same from, to and kind. Leave out a relation that changes later in the story but held when it was recorded.
+
+Rules:
+- Use only this chapter's text, read to its end, and the lists above. You may know this book and the series it belongs to: ignore everything you know of them beyond this chapter.
+- from and to are refs from the characters list above.
+- kind is one of: family, romance, friend, ally, rival, enemy, mentor, serves, colleague, acquaintance, owns. The order of from and to matters only for mentor, serves and owns, which run from the mentor, the servant and the owner (mentor: from regularly teaches or guides to; not a single act of help).
+- note is a few words on what this chapter shows (for example "hid him from the guard").
+- evidence: a phrase or a sentence copied exactly from this chapter, character for character, that shows the item. Never paraphrase it: never a name where the text has a pronoun, never two passages joined with "..." or any other mark, never a word or its ending changed.
+- relations and overturned are empty lists when this chapter reveals or overturns nothing.
+---
+{"additionalProperties":false,"properties":{"overturned":{"items":{"additionalProperties":false,"properties":{"evidence":{"type":"string"},"from":{"type":"string"},"kind":{"enum":["family","romance","friend","ally","rival","enemy","mentor","serves","colleague","acquaintance","owns"],"type":"string"},"note":{"type":"string"},"to":{"type":"string"}},"required":["evidence","from","kind","note","to"],"type":"object"},"type":"array"},"relations":{"items":{"additionalProperties":false,"properties":{"evidence":{"type":"string"},"from":{"type":"string"},"kind":{"enum":["family","romance","friend","ally","rival","enemy","mentor","serves","colleague","acquaintance","owns"],"type":"string"},"note":{"type":"string"},"to":{"type":"string"}},"required":["evidence","from","kind","note","to"],"type":"object"},"type":"array"}},"required":["overturned","relations"],"type":"object"}

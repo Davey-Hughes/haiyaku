@@ -6,6 +6,7 @@
 
 mod common;
 
+use std::cell::RefCell;
 use std::fs;
 use std::path::Path;
 
@@ -15,10 +16,13 @@ use common::epub::{
     relation, relevant_roster, xhtml,
 };
 use haiyaku::book::{Book, ChapterText};
-use haiyaku::extract::{Options, PROMPT_VERSION, Roster, check, extract_book, prompt};
+use haiyaku::extract::{
+    Options, PROMPT_VERSION, Roster, SYSTEM, check, check_reveals, extract_book, prompt, reveal_prompt, reveal_schema,
+    schema,
+};
 use haiyaku::fold::Cast;
 use haiyaku::llm::{Backend, Replay, Reply, Request};
-use haiyaku::log::{BookLog, Chapter, EventBody, RelationKind};
+use haiyaku::log::{BookLog, Chapter, Event, EventBody, RelationKind};
 use haiyaku::store::write_book;
 use haiyaku::{Error, Result, Scope, cast_at};
 use serde_json::{Value, json};
@@ -167,7 +171,6 @@ fn prompt_lists_a_relation_through_its_survivors() {
         ],
         "relations": [
             relation("c1", "new1", "acquaintance", "from school", "Ada knew Tom Reed from school"),
-            relation("c2", "new1", "ally", "walked together", "Tom Reed and the stranger walked up the hill"),
         ],
         "same_as": [{ "ref": "new1", "other": "c2", "evidence": "The stranger took off his hat, and it was Tom Reed" }],
     });
@@ -175,7 +178,7 @@ fn prompt_lists_a_relation_through_its_survivors() {
 
     let prompt = prompt(&roster, &chapter_text(3, 3, &["Ada Marsh and Tom Reed rowed out to the point."]));
     // The stranger, c2, is now Tom Reed, c3: the acquaintance from c1 to c2 is the one from c1 to c3, listed
-    // once under the note first given, and the ally between c2 and c3 is between c3 and itself.
+    // once under the note first given.
     assert_eq!(
         section(&prompt, CHARACTERS),
         Some(vec!["c1 | Ada Marsh |", "c3 | Tom Reed | the stranger"]),
@@ -217,6 +220,158 @@ fn a_cell_holds_no_bar_and_no_line_break() {
     assert_eq!(section(&prompt, RELATIONS), Some(vec!["c1 | friend | c2 | old friend / from school"]), "{prompt}");
 }
 
+/// The second call's task, a paragraph a line, in the words the design gives it.
+const REVEAL_TASK: [&str; 3] = [
+    "Read the chapter again. This step looks only for what the chapter reveals or overturns about these characters; \
+     another step already recorded what the chapter shows in passing.",
+    "relations: a relation between two of these characters that this chapter reveals and that the list above does \
+     not hold in any wording, such as a hidden allegiance, a secret act, or a relation of another kind for a pair \
+     already listed. Leave out what the chapter only shows in passing.",
+    "overturned: a relation in the list above that this chapter shows was not true, such as a character who seemed \
+     hostile but was protecting someone. Name it exactly as the list gives it: the same from, to and kind. Leave out \
+     a relation that changes later in the story but held when it was recorded.",
+];
+
+#[test]
+fn reveal_prompt_has_the_chapter_the_lists_and_the_task() {
+    let mut chapter = chapter_text(
+        1,
+        1,
+        &["Ada Marsh kept the lamp at Gull Point.", "Tom Reed rowed out each week to bring her oil for the lamp."],
+    );
+    chapter.title = "The Lamp".into();
+    let oil = "Tom Reed rowed out each week to bring her oil";
+    let reply = json!({
+        "characters": [
+            character("new1", name("Ada Marsh", Some("Ada"), Some("Marsh"), None, None), "Ada Marsh kept the lamp"),
+            character("new2", name("Tom Reed", Some("Tom"), Some("Reed"), None, None), oil),
+        ],
+        "relations": [relation("new2", "new1", "acquaintance", "brings her oil", oil)],
+        "same_as": [],
+    });
+    let mut roster = Roster::new();
+    keep_all(&mut roster, &chapter, &reply);
+    let reveal = reveal_prompt(&roster, &chapter);
+
+    // The chapter as the first call carries it, then the line about the reader.
+    let first = prompt(&Roster::new(), &chapter);
+    let (heading, _) = first.split_once(&format!("\n{CHARACTERS}\n")).expect(&first);
+    let start = format!("{heading}\nThe reader has just finished this chapter.\n\n{CHARACTERS}\n");
+    assert!(reveal.starts_with(&start), "{reveal}");
+    // The lists hold what the chapter's first reply introduced and stated.
+    assert_eq!(section(&reveal, CHARACTERS), Some(vec!["c1 | Ada Marsh |", "c2 | Tom Reed |"]), "{reveal}");
+    assert_eq!(section(&reveal, RELATIONS), Some(vec!["c2 | acquaintance | c1 | brings her oil"]), "{reveal}");
+    // The task follows the lists, a paragraph to a line, and the rules follow it and end the prompt.
+    let task = format!("brings her oil\n\n{}\n\nRules:\n", REVEAL_TASK.join("\n\n"));
+    let (_, rules) = reveal.split_once(&task).expect(&reveal);
+    assert!(!rules.is_empty(), "{reveal}");
+    assert!(rules.lines().all(|line| line.starts_with("- ")), "{reveal}");
+    // Evidence is copied as the first call is told to copy it.
+    assert_eq!(rule(&reveal, "- evidence:"), rule(&first, "- evidence:"));
+}
+
+#[test]
+fn reveal_prompt_names_every_relation_kind() {
+    let reveal = reveal_prompt(&Roster::new(), &chapter_text(1, 1, &["At dusk the keeper climbed to the lamp."]));
+    let kinds = RelationKind::ALL.map(RelationKind::as_str).join(", ");
+    assert!(reveal.contains(&kinds), "{reveal}");
+    // The directed kinds run the way the first call is told they run.
+    let first = prompt(&Roster::new(), &chapter_text(1, 1, &["At dusk the keeper climbed to the lamp."]));
+    let (_, direction) = rule(&first, "- relations:").split_once("The order of from and to").expect(&first);
+    let (direction, _) = direction.split_once(". ").expect(&first);
+    assert!(rule(&reveal, "- kind is one of:").contains(direction), "{reveal}");
+}
+
+#[test]
+fn overturned_relation_leaves_both_lists() {
+    let bran = name("Bran Hale", Some("Bran"), Some("Hale"), None, None);
+    let corin = name("Corin Vale", Some("Corin"), Some("Vale"), None, None);
+    let nothing = json!({ "characters": [], "relations": [], "same_as": [] });
+    let mut roster = Roster::new();
+    let one = chapter_text(
+        1,
+        1,
+        &["Bran Hale stood at the gate with his spear.", "Bran Hale had hated Corin Vale since the war."],
+    );
+    let hated = "Bran Hale had hated Corin Vale since the war";
+    let reply = json!({
+        "characters": [character("new1", bran, "Bran Hale stood at the gate"), character("new2", corin, hated)],
+        "relations": [relation("new1", "new2", "enemy", "hated since the war", hated)],
+        "same_as": [],
+    });
+    keep_all(&mut roster, &one, &reply);
+    let two = chapter_text(
+        2,
+        2,
+        &[
+            "Bran Hale opened the gate for Corin Vale at night.",
+            "He had never hated Corin Vale; he had hidden him from the guard.",
+        ],
+    );
+    keep_all(&mut roster, &two, &nothing);
+    let overturn = relation("c1", "c2", "enemy", "hid him from the guard", "He had never hated Corin Vale");
+    let outcome = check_reveals(&mut roster, &two, &json!({ "relations": [], "overturned": [overturn] }));
+    assert!(outcome.rejected.is_empty() && outcome.kept == 1, "{outcome:?}");
+
+    // Both calls for chapter 3 list the two, and no relation between them.
+    let three = chapter_text(
+        3,
+        3,
+        &[
+            "Bran Hale and Corin Vale rode north together.",
+            "On the road Bran Hale swore that Corin Vale was his enemy.",
+        ],
+    );
+    for sent in [prompt(&roster, &three), reveal_prompt(&roster, &three)] {
+        assert_eq!(section(&sent, CHARACTERS), Some(vec!["c1 | Bran Hale |", "c2 | Corin Vale |"]), "{sent}");
+        assert_eq!(section(&sent, RELATIONS), None, "{sent}");
+    }
+    // Chapter 3 states it again with its own evidence, and both calls for chapter 4 list it under that note.
+    let again = relation("c1", "c2", "enemy", "sworn enemy", "Bran Hale swore that Corin Vale was his enemy");
+    keep_all(&mut roster, &three, &json!({ "characters": [], "relations": [again], "same_as": [] }));
+    let four = chapter_text(4, 4, &["Bran Hale and Corin Vale parted at the ford."]);
+    for sent in [prompt(&roster, &four), reveal_prompt(&roster, &four)] {
+        assert_eq!(section(&sent, RELATIONS), Some(vec!["c1 | enemy | c2 | sworn enemy"]), "{sent}");
+    }
+}
+
+/// The first call for chapter 2 of "The Keeper", with the roster chapter 1's reply leaves: the system text, a line
+/// `---`, the prompt, a line `---` and the schema.
+fn first_call() -> String {
+    let dir = TempDir::new().unwrap();
+    let chapters = keeper(&dir).chapters(1, 2).unwrap();
+    let mut roster = Roster::new();
+    keep_all(&mut roster, &chapters[0], &serde_json::from_str(&keeper_replies()[0]).unwrap());
+    format!("{SYSTEM}\n---\n{}---\n{}\n", prompt(&roster, &chapters[1]), schema())
+}
+
+#[test]
+fn first_call_is_byte_for_byte_prompt_4() {
+    // The first call is pinned byte for byte: a change to SYSTEM, prompt or schema fails here, so it is made on
+    // purpose, with this file written again and PROMPT_VERSION raised.
+    assert_eq!(first_call(), include_str!("golden/first_call.txt"));
+}
+
+/// The second call for chapter 2 of "The Keeper", with the roster chapter 1's two replies leave: the system text, a
+/// line `---`, the prompt, a line `---` and the schema.
+fn reveal_call() -> String {
+    let dir = TempDir::new().unwrap();
+    let chapters = keeper(&dir).chapters(1, 2).unwrap();
+    let replies = keeper_replies();
+    let mut roster = Roster::new();
+    keep_all(&mut roster, &chapters[0], &serde_json::from_str(&replies[0]).unwrap());
+    let outcome = check_reveals(&mut roster, &chapters[0], &serde_json::from_str(&replies[1]).unwrap());
+    assert!(outcome.rejected.is_empty(), "{:?}", outcome.rejected);
+    format!("{SYSTEM}\n---\n{}---\n{}\n", reveal_prompt(&roster, &chapters[1]), reveal_schema())
+}
+
+#[test]
+fn reveal_call_is_byte_for_byte_prompt_5() {
+    // The second call is pinned as the first is: a change to SYSTEM, reveal_prompt or reveal_schema fails here, so
+    // it is made on purpose, with this file written again and PROMPT_VERSION raised.
+    assert_eq!(reveal_call(), include_str!("golden/reveal_call.txt"));
+}
+
 /// When "The Keeper"'s extractions are made.
 const EXTRACTED_AT: &str = "2026-11-21T12:00:00Z";
 
@@ -225,10 +380,10 @@ fn keeper(dir: &TempDir) -> Book {
     Book::open(&keeper_epub(dir.path())).unwrap()
 }
 
-/// Entries `first` to `last` of `book` extracted with `replay`, with replies kept in `cache` when there is one.
-fn extract(book: &Book, replay: &Replay, first: u32, last: u32, cache: Option<&Path>) -> Result<BookLog> {
+/// Entries `first` to `last` of `book` extracted with `backend`, with replies kept in `cache` when there is one.
+fn extract(book: &Book, backend: &dyn Backend, first: u32, last: u32, cache: Option<&Path>) -> Result<BookLog> {
     let options = Options { first, last, cache, extracted_at: EXTRACTED_AT };
-    extract_book(book, replay, &options, &mut |_| {})
+    extract_book(book, backend, &options, &mut |_| {})
 }
 
 /// The cast a reader at `document` sees, with `log` the one book stored.
@@ -291,7 +446,7 @@ fn documents_after_the_range_show_the_whole_extracted_cast() {
     let dir = TempDir::new().unwrap();
     let book = keeper(&dir);
     let replies = keeper_replies();
-    let two = extract(&book, &Replay::new(replies[..2].to_vec()), 1, 2, None).unwrap();
+    let two = extract(&book, &Replay::new(replies[..4].to_vec()), 1, 2, None).unwrap();
     // A reader at the start of chapter 3 of the whole book has finished chapter 2 and no more.
     let after_two = cast(&extract(&book, &Replay::new(replies), 1, 3, None).unwrap(), "OEBPS/c3.xhtml");
     assert_eq!(names(&after_two), ["Ada Marsh", "Pip", "the stranger"]);
@@ -312,7 +467,7 @@ fn progress_is_called_once_per_chapter() {
 
     // Each chapter as it is done, so a run that fails has shown the chapters before the one that failed.
     let mut seen: Vec<u32> = Vec::new();
-    let failed = extract_book(&book, &Replay::new(keeper_replies()[..2].to_vec()), &options, &mut |chapter| {
+    let failed = extract_book(&book, &Replay::new(keeper_replies()[..4].to_vec()), &options, &mut |chapter| {
         seen.push(chapter.number);
     });
     assert!(failed.is_err());
@@ -332,43 +487,214 @@ fn one_retry_on_a_model_error() {
 
     let replay = Replay::new(vec!["x".into(), "y".into(), keeper_replies().swap_remove(0)]);
     let message = model_error(extract(&book, &replay, 1, 3, None));
-    // The chapter's number and title, and the cause of the second failure.
-    assert!(message.contains("chapter 1") && message.contains("Chapter 1"), "{message}");
+    // The chapter's number and title, the call that failed, and the cause of the second failure.
+    assert!(message.starts_with("chapter 1 (Chapter 1), first call, tried twice: "), "{message}");
     assert!(message.contains("reply 2"), "{message}");
     assert_eq!(replay.remaining(), 1, "a second failure ends the run with no third call");
 }
 
-/// A replay that reports a time and a cost for each call, as a model's backend does.
-#[derive(Debug)]
-struct Timed(Replay);
+#[test]
+fn second_call_has_one_retry_on_a_model_error() {
+    let dir = TempDir::new().unwrap();
+    let book = keeper(&dir);
+    // Chapter 1's second call fails once and is answered the second time.
+    let mut replies = keeper_replies();
+    replies.insert(1, "not json".to_owned());
+    let replay = Replay::new(replies);
+    let log = extract(&book, &replay, 1, 3, None).unwrap();
+    assert_eq!(replay.remaining(), 0);
+    assert_eq!(log, extract(&book, &Replay::new(keeper_replies()), 1, 3, None).unwrap());
+}
 
-impl Backend for Timed {
+/// A backend that answers from a replay of its replies, with a time and a cost for each call as a model's
+/// backend reports them, 1.5 s and 0.25 USD, and keeps what each call asked.
+#[derive(Debug)]
+struct Recorder {
+    replay: Replay,
+    asked: RefCell<Vec<Asked>>,
+}
+
+/// What one call asked: its system text, its prompt and its schema.
+#[derive(Debug)]
+struct Asked {
+    system: String,
+    user: String,
+    schema: Value,
+}
+
+impl Recorder {
+    fn new(replies: Vec<String>) -> Recorder {
+        Recorder { replay: Replay::new(replies), asked: RefCell::default() }
+    }
+}
+
+impl Backend for Recorder {
     fn name(&self) -> &str {
-        self.0.name()
+        self.replay.name()
     }
 
     fn model(&self) -> &str {
-        self.0.model()
+        self.replay.model()
     }
 
     fn call(&self, request: &Request<'_>) -> Result<Reply> {
-        Ok(Reply { seconds: 1.5, cost_usd: Some(0.25), ..self.0.call(request)? })
+        let asked = Asked { system: request.system.into(), user: request.user.into(), schema: request.schema.clone() };
+        self.asked.borrow_mut().push(asked);
+        Ok(Reply { seconds: 1.5, cost_usd: Some(0.25), ..self.replay.call(request)? })
     }
+}
+
+/// The title and text a prompt for `chapter` opens with.
+fn heading(chapter: &ChapterText) -> String {
+    format!("Chapter {}: {}\n\n{}\n", chapter.number, chapter.title, chapter.text())
+}
+
+/// Words of chapter 2 of "The Keeper" that an overturn of the keeper's relation to Pip can quote.
+const PIP_AND_THE_STRANGER: &str = "Pip flew down and walked twice round the stranger's boots";
+
+/// An overturn of the keeper's ownership of Pip, which chapter 1 records: the keeper is c1 and Pip c2, and both
+/// are listed for chapter 2, the chapter after the one that last saw them.
+fn overturn_of_pip() -> Value {
+    relation("c1", "c2", "owns", "Pip follows the stranger", PIP_AND_THE_STRANGER)
+}
+
+/// The events of `log` in chapter `number`.
+fn events_in(log: &BookLog, number: u32) -> Vec<Event> {
+    log.events.iter().filter(|event| event.chapter == number).cloned().collect()
+}
+
+#[test]
+fn each_chapter_makes_a_second_call() {
+    let dir = TempDir::new().unwrap();
+    let book = keeper(&dir);
+    let recorder = Recorder::new(keeper_replies());
+    extract(&book, &recorder, 1, 3, None).unwrap();
+    let asked = recorder.asked.into_inner();
+    assert_eq!(asked.len(), 6);
+
+    let replies = keeper_replies();
+    let mut roster = Roster::new();
+    for ((chapter, calls), answers) in book.chapters(1, 3).unwrap().iter().zip(asked.chunks(2)).zip(replies.chunks(2)) {
+        let [first, second] = calls else { panic!("{calls:?}") };
+        assert_eq!((first.system.as_str(), &first.schema), (SYSTEM, &schema()));
+        assert_eq!(first.user, prompt(&roster, chapter));
+        keep_all(&mut roster, chapter, &serde_json::from_str(&answers[0]).unwrap());
+        // The second call carries the roster the first call's reply left.
+        assert_eq!((second.system.as_str(), &second.schema), (SYSTEM, &reveal_schema()));
+        assert!(second.user.starts_with(&heading(chapter)), "{}", second.user);
+        assert!(second.user.contains("\nThe reader has just finished this chapter.\n"), "{}", second.user);
+        assert_eq!(second.user, reveal_prompt(&roster, chapter));
+        check_reveals(&mut roster, chapter, &serde_json::from_str(&answers[1]).unwrap());
+    }
+}
+
+#[test]
+fn second_call_events_follow_the_first_calls() {
+    let dir = TempDir::new().unwrap();
+    let book = keeper(&dir);
+    let plain = extract(&book, &Replay::new(keeper_replies()), 1, 3, None).unwrap();
+    let mut replies = keeper_replies();
+    replies[3] = json!({ "relations": [], "overturned": [overturn_of_pip()] }).to_string();
+    let log = extract(&book, &Replay::new(replies), 1, 3, None).unwrap();
+
+    let mut two = events_in(&log, 2);
+    let overturned = two.pop().unwrap();
+    assert_eq!(two, events_in(&plain, 2), "the first call's events come first");
+    let owns = RelationKind::Owns;
+    let note = "Pip follows the stranger".to_owned();
+    assert_eq!(overturned.body, EventBody::Overturned { from: "c1".into(), to: "c2".into(), kind: owns, note });
+    assert_eq!(overturned.quote, PIP_AND_THE_STRANGER);
+    // One count through the whole book, on through chapter 3.
+    for (seq, event) in (1..).zip(&log.events) {
+        assert_eq!(event.seq, seq, "{:#?}", log.events);
+    }
+    assert_eq!(events_in(&log, 3)[0].seq, overturned.seq + 1);
+}
+
+#[test]
+fn chapter_row_sums_both_calls() {
+    let dir = TempDir::new().unwrap();
+    let book = keeper(&dir);
+    let plain = extract(&book, &Recorder::new(keeper_replies()), 1, 3, None).unwrap();
+    // Chapter 2's second reply has one item kept and one turned down: c9 is no one.
+    let mut replies = keeper_replies();
+    let stray = relation("c1", "c9", "friend", "reads the letter", "She read it twice on the steps");
+    replies[3] = json!({ "relations": [stray], "overturned": [overturn_of_pip()] }).to_string();
+    let log = extract(&book, &Recorder::new(replies), 1, 3, None).unwrap();
+
+    for chapter in &log.chapters {
+        assert_eq!((chapter.seconds, chapter.cost_usd), (3.0, Some(0.5)), "{chapter:?}");
+    }
+    let counts = |log: &BookLog| -> Vec<(u32, u32)> {
+        log.chapters.iter().map(|chapter| (chapter.kept, chapter.rejected)).collect()
+    };
+    let mut sums = counts(&plain);
+    sums[1] = (sums[1].0 + 1, sums[1].1 + 1);
+    assert_eq!(counts(&log), sums);
+}
+
+#[test]
+fn rejected_file_holds_both_calls() {
+    let (dir, cache) = (TempDir::new().unwrap(), TempDir::new().unwrap());
+    let book = keeper(&dir);
+    let mut replies = keeper_replies();
+    let mut first: Value = serde_json::from_str(&replies[2]).unwrap();
+    let stray = relation("c1", "new9", "friend", "reads the letter", "She read it twice on the steps");
+    first["relations"].as_array_mut().unwrap().push(stray.clone());
+    replies[2] = first.to_string();
+    // The keeper owns Pip and is no friend of his in the log, so there is no friendship to overturn.
+    let unheld = relation("c1", "c2", "friend", "Pip follows the stranger", PIP_AND_THE_STRANGER);
+    replies[3] = json!({ "relations": [], "overturned": [unheld] }).to_string();
+    let log = extract(&book, &Replay::new(replies), 1, 3, Some(cache.path())).unwrap();
+
+    assert_eq!(log.chapters[1].rejected, 2);
+    let path = cache.path().join(&book.sha256).join("rejected").join("002.json");
+    let written: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+    let both = json!([
+        { "call": "first", "reason": "unknown_ref", "item": stray },
+        { "call": "reveal", "reason": "not_recorded", "item": unheld },
+    ]);
+    assert_eq!(written["rejected"], both, "{written}");
+}
+
+#[test]
+fn resume_after_a_failed_second_call() {
+    let (dir, cache) = (TempDir::new().unwrap(), TempDir::new().unwrap());
+    let book = keeper(&dir);
+    let replies = keeper_replies();
+    // Chapter 1's two replies and chapter 2's first: chapter 2's second call finds none.
+    let message = model_error(extract(&book, &Recorder::new(replies[..3].to_vec()), 1, 3, Some(cache.path())));
+    assert!(message.starts_with("chapter 2 (Chapter 2), reveal call, tried twice: "), "{message}");
+
+    let recorder = Recorder::new(replies[3..].to_vec());
+    let resumed = extract(&book, &recorder, 1, 3, Some(cache.path())).unwrap();
+    let asked = recorder.asked.into_inner();
+    let chapters = book.chapters(1, 3).unwrap();
+    // The chapter each call was for, and whether it was the chapter's second.
+    let calls: Vec<(Option<u32>, bool)> = asked
+        .iter()
+        .map(|asked| {
+            let chapter = chapters.iter().find(|chapter| asked.user.starts_with(&heading(chapter)));
+            (chapter.map(|chapter| chapter.number), asked.schema == reveal_schema())
+        })
+        .collect();
+    // Chapter 2's second call, then chapter 3's two: the cache answers the rest.
+    assert_eq!(calls, [(Some(2), true), (Some(3), false), (Some(3), true)]);
+    assert_eq!(resumed, extract(&book, &Recorder::new(replies), 1, 3, None).unwrap());
 }
 
 #[test]
 fn second_run_calls_nothing() {
     let (dir, cache) = (TempDir::new().unwrap(), TempDir::new().unwrap());
     let book = keeper(&dir);
-    let options = Options { first: 1, last: 3, cache: Some(cache.path()), extracted_at: EXTRACTED_AT };
-    let first = extract_book(&book, &Timed(Replay::new(keeper_replies())), &options, &mut |_| {}).unwrap();
-    assert!(first.chapters.iter().all(|chapter| chapter.seconds == 1.5 && chapter.cost_usd == Some(0.25)));
+    let first = extract(&book, &Recorder::new(keeper_replies()), 1, 3, Some(cache.path())).unwrap();
+    assert!(first.chapters.iter().all(|chapter| chapter.seconds == 3.0 && chapter.cost_usd == Some(0.5)));
     // The second run reports the time and the cost the first one recorded.
     let second = extract(&book, &Replay::new(vec![]), 1, 3, Some(cache.path())).unwrap();
     assert_eq!(second, first);
-    // One file a reply, and no temporary file left beside them.
+    // One file a reply, two a chapter, and no temporary file left beside them.
     let replies = cache.path().join(&book.sha256).join("replies");
-    assert_eq!(fs::read_dir(replies).unwrap().count(), 3);
+    assert_eq!(fs::read_dir(replies).unwrap().count(), 6);
 }
 
 #[test]
@@ -381,7 +707,7 @@ fn reply_file_that_does_not_parse_is_ignored() {
     }
     let replay = Replay::new(keeper_replies());
     assert_eq!(extract(&book, &replay, 1, 3, Some(cache.path())).unwrap(), first);
-    assert_eq!(replay.remaining(), 0, "every chapter called again");
+    assert_eq!(replay.remaining(), 0, "every call made again");
     assert_eq!(extract(&book, &Replay::new(vec![]), 1, 3, Some(cache.path())).unwrap(), first, "and kept again");
 }
 
@@ -390,10 +716,10 @@ fn resume_after_failure() {
     let (dir, cache) = (TempDir::new().unwrap(), TempDir::new().unwrap());
     let book = keeper(&dir);
     let replies = keeper_replies();
-    let message = model_error(extract(&book, &Replay::new(replies[..2].to_vec()), 1, 3, Some(cache.path())));
+    let message = model_error(extract(&book, &Replay::new(replies[..4].to_vec()), 1, 3, Some(cache.path())));
     assert!(message.contains("chapter 3"), "{message}");
 
-    let replay = Replay::new(replies[2..].to_vec());
+    let replay = Replay::new(replies[4..].to_vec());
     let resumed = extract(&book, &replay, 1, 3, Some(cache.path())).unwrap();
     assert_eq!(replay.remaining(), 0);
     assert_eq!(resumed, extract(&book, &Replay::new(replies), 1, 3, None).unwrap());
@@ -424,7 +750,7 @@ fn chapter_without_text_calls_no_model() {
     let dir = TempDir::new().unwrap();
     let plated = plated(&dir);
 
-    let replay = Replay::new(keeper_replies()[..2].to_vec());
+    let replay = Replay::new(keeper_replies()[..4].to_vec());
     let log = extract(&plated, &replay, 1, 3, None).unwrap();
     assert_eq!(replay.remaining(), 0);
     let [first, plate, last] = log.chapters.as_slice() else { panic!("{:?}", log.chapters) };
@@ -441,7 +767,8 @@ fn rejected_items_go_to_the_cache() {
     let mut reply: Value = serde_json::from_str(&keeper_replies()[0]).unwrap();
     let stray = relation("new1", "new9", "friend", "watches the tide", "Below the gallery the rocks were black");
     reply["relations"].as_array_mut().unwrap().push(stray.clone());
-    let log = extract(&book, &Replay::new(vec![reply.to_string()]), 1, 1, Some(cache.path())).unwrap();
+    let replies = vec![reply.to_string(), keeper_replies().swap_remove(1)];
+    let log = extract(&book, &Replay::new(replies), 1, 1, Some(cache.path())).unwrap();
 
     assert_eq!(log.chapters[0].rejected, 1);
     let stray_kept = log
@@ -451,7 +778,7 @@ fn rejected_items_go_to_the_cache() {
     assert!(!stray_kept, "{:#?}", log.events);
     let path = cache.path().join(&book.sha256).join("rejected").join("001.json");
     let written: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
-    assert_eq!(written["rejected"], json!([{ "reason": "unknown_ref", "item": stray }]), "{written}");
+    assert_eq!(written["rejected"], json!([{ "call": "first", "reason": "unknown_ref", "item": stray }]), "{written}");
     assert!(written["notes"].is_object(), "{written}");
 }
 
@@ -462,13 +789,14 @@ fn rejected_files_are_named_by_contents_entry() {
     let mut reply: Value = serde_json::from_str(&keeper_replies()[0]).unwrap();
     let stray = relation("new1", "new9", "friend", "watches the tide", "Below the gallery the rocks were black");
     reply["relations"].as_array_mut().unwrap().push(stray.clone());
-    extract(&book, &Replay::new(vec![reply.to_string()]), 1, 1, Some(cache.path())).unwrap();
+    let replies = vec![reply.to_string(), keeper_replies().swap_remove(1)];
+    extract(&book, &Replay::new(replies), 1, 1, Some(cache.path())).unwrap();
     // Entry 2 is the first chapter of this run, so a file named by the run's chapter would be entry 1's.
-    extract(&book, &Replay::new(keeper_replies()[1..2].to_vec()), 2, 2, Some(cache.path())).unwrap();
+    extract(&book, &Replay::new(keeper_replies()[2..4].to_vec()), 2, 2, Some(cache.path())).unwrap();
 
     let rejected = cache.path().join(&book.sha256).join("rejected");
     let read = |name: &str| -> Value { serde_json::from_slice(&fs::read(rejected.join(name)).unwrap()).unwrap() };
-    assert_eq!(read("001.json")["rejected"], json!([{ "reason": "unknown_ref", "item": stray }]));
+    assert_eq!(read("001.json")["rejected"], json!([{ "call": "first", "reason": "unknown_ref", "item": stray }]));
     assert!(read("002.json")["notes"].is_object());
 }
 
@@ -480,7 +808,7 @@ fn chapter_without_text_writes_an_empty_rejected_file() {
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(&path, r#"{ "rejected": [{ "reason": "unknown_ref", "item": {} }], "notes": {} }"#).unwrap();
 
-    extract(&plated, &Replay::new(keeper_replies()[..2].to_vec()), 1, 3, Some(cache.path())).unwrap();
+    extract(&plated, &Replay::new(keeper_replies()[..4].to_vec()), 1, 3, Some(cache.path())).unwrap();
     let written: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     assert_eq!(written, json!({ "rejected": [], "notes": {} }));
 }

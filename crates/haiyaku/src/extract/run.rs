@@ -1,5 +1,5 @@
-//! A whole book extracted: for each chapter in order its prompt, one call and the check of the reply, with a
-//! cache of replies that lets a run that stopped start again where it stopped.
+//! A whole book extracted: for each chapter in order its two calls, each with its prompt and the check of its
+//! reply, with a cache of replies that lets a run that stopped start again where it stopped.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -9,8 +9,8 @@ use std::path::{Path, PathBuf};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-use super::check::{Rejected, check, schema};
-use super::prompt::{PROMPT_VERSION, SYSTEM, prompt};
+use super::check::{Rejected, check, check_reveals, reveal_schema, schema};
+use super::prompt::{PROMPT_VERSION, SYSTEM, prompt, reveal_prompt};
 use super::roster::Roster;
 use crate::book::{Book, ChapterText};
 use crate::llm::{Backend, Reply, Request};
@@ -26,33 +26,38 @@ pub struct Options<'a> {
     /// The last entry to extract, itself included.
     pub last: u32,
     /// The directory a book's replies are kept in, under `<book sha256>/replies/`, so that a run started again
-    /// calls no model for a chapter already answered; and under `<book sha256>/rejected/<nnn>.json`, what the
-    /// check of the chapter at entry `nnn` of the table of contents turned down and what it noted, an empty
-    /// record for a chapter without text. A file is named by the entry and not by the chapter's place in the run,
-    /// so it holds the record of the latest run over that entry, whatever range that run covered, and a run over
-    /// other entries leaves it as it is. `None` reads and writes nothing.
+    /// calls no model for a call already answered; and under `<book sha256>/rejected/<nnn>.json`, what the
+    /// checks of both calls for the chapter at entry `nnn` of the table of contents turned down, each marked with
+    /// its call, and what the first call's check noted, an empty record for a chapter without text. A file is
+    /// named by the entry and not by the chapter's place in the run, so it holds the record of the latest run over
+    /// that entry, whatever range that run covered, and a run over other entries leaves it as it is. `None` reads
+    /// and writes nothing.
     pub cache: Option<&'a Path>,
     /// When the book was extracted, in RFC 3339 and UTC: what [`BookRecord::extracted_at`] records.
     pub extracted_at: &'a str,
 }
 
 /// The log of table-of-contents entries `options.first` to `options.last` of `book`: each a chapter, in order,
-/// sent to `backend` with its [`prompt`] and the [`schema`], and the reply's items [`check`]ed against the
-/// chapter and the chapters before it. `progress` is given each chapter's row once the chapter is done.
+/// sent to `backend` twice. The first call carries its [`prompt`] and the [`schema`], and the reply's items are
+/// [`check`]ed against the chapter and the chapters before it; the second carries its [`reveal_prompt`], made
+/// from the roster that check left, and the [`reveal_schema`], and the reply is checked with
+/// [`check_reveals`], so its events follow the first reply's. A chapter's row sums both calls' seconds, kept and
+/// rejected counts and costs, and gives no cost when either call states none. `progress` is given each
+/// chapter's row once the chapter is done.
 ///
-/// A chapter without text is sent to no model: its row keeps nothing and costs 0, which is known. A call that
-/// fails with [`Error::Model`], which is how a backend reports any failure, is made once more, and a second
+/// A chapter without text is sent to no model: its row keeps nothing and costs 0, which is known. Either call
+/// that fails with [`Error::Model`], which is how a backend reports any failure, is made once more, and a second
 /// failure in a row ends the run. With a cache (see [`Options::cache`]) a reply already kept is taken in place of
 /// a call, with the seconds and cost it recorded, so a run started again reports what the whole book took and
-/// pays only for the chapters no earlier run finished.
+/// pays only for the calls no earlier run finished.
 ///
 /// It writes to no database: the caller stores the log, so a run that fails leaves the database as it was.
 ///
 /// # Errors
 ///
 /// [`Error::Invalid`] when the entries are not in the table of contents, before any call. [`Error::Model`]
-/// naming the chapter's number and title, with the cause, when its call fails twice. [`Error::Io`] when the
-/// cache cannot be read or written.
+/// naming the chapter's number and title and which of its calls failed, with the cause, when one fails twice.
+/// [`Error::Io`] when the cache cannot be read or written.
 pub fn extract_book(
     book: &Book,
     backend: &dyn Backend,
@@ -63,6 +68,8 @@ pub fn extract_book(
     let cache = options.cache.map(|dir| Cache { book: dir.join(&book.sha256) });
     let schema = schema();
     let schema_text = schema.to_string();
+    let reveal_schema = reveal_schema();
+    let reveal_schema_text = reveal_schema.to_string();
     let mut roster = Roster::new();
     let mut rows = Vec::with_capacity(chapters.len());
     for chapter in &chapters {
@@ -71,19 +78,28 @@ pub fn extract_book(
             // cost.
             if let Some(cache) = &cache {
                 // An empty record, so that what an earlier run wrote for this entry does not stand for this one.
-                cache.put_rejected(chapter.toc_entry, &[], &BTreeMap::new())?;
+                cache.put_rejected(chapter.toc_entry, &[], &[], &BTreeMap::new())?;
             }
             (0.0, Some(0.0), 0, 0)
         } else {
             let user = prompt(&roster, chapter);
             let request = Request { system: SYSTEM, user: &user, schema: &schema };
-            let reply = answer(backend, &request, &schema_text, cache.as_ref(), chapter)?;
+            let reply = answer(backend, &request, &schema_text, cache.as_ref(), chapter, "first call")?;
             let outcome = check(&mut roster, chapter, &reply.json);
+            let user = reveal_prompt(&roster, chapter);
+            let request = Request { system: SYSTEM, user: &user, schema: &reveal_schema };
+            let reveal = answer(backend, &request, &reveal_schema_text, cache.as_ref(), chapter, "reveal call")?;
+            let revealed = check_reveals(&mut roster, chapter, &reveal.json);
             if let Some(cache) = &cache {
-                cache.put_rejected(chapter.toc_entry, &outcome.rejected, &outcome.notes)?;
+                cache.put_rejected(chapter.toc_entry, &outcome.rejected, &revealed.rejected, &outcome.notes)?;
             }
-            let rejected = u32::try_from(outcome.rejected.len()).unwrap_or(u32::MAX);
-            (reply.seconds, reply.cost_usd, outcome.kept, rejected)
+            let rejected = outcome.rejected.len().saturating_add(revealed.rejected.len());
+            (
+                reply.seconds + reveal.seconds,
+                sum_costs(reply.cost_usd, reveal.cost_usd),
+                outcome.kept.saturating_add(revealed.kept),
+                u32::try_from(rejected).unwrap_or(u32::MAX),
+            )
         };
         let row = Chapter {
             number: chapter.number,
@@ -114,37 +130,39 @@ pub fn extract_book(
     })
 }
 
-/// The reply to `request`, the call for `chapter`: the one the cache keeps for it, or else the backend's, which
-/// the cache then keeps.
+/// The reply to `request`, the call of `chapter` that `call` names: the one the cache keeps for it, or else the
+/// backend's, which the cache then keeps.
 ///
-/// A prompt depends only on the book and the chapters before it, so a run started again asks each chapter that
-/// an earlier run finished what that run asked, under the same key, and calls the model from the first chapter
-/// no run finished.
+/// A prompt depends only on the book, the chapters before it and, for a second call, the chapter's first reply,
+/// so a run started again asks each call that an earlier run finished what that run asked, under the same key,
+/// and calls the model from the first call no run finished.
 fn answer(
     backend: &dyn Backend,
     request: &Request<'_>,
     schema_text: &str,
     cache: Option<&Cache>,
     chapter: &ChapterText,
+    call: &str,
 ) -> Result<Reply> {
-    let Some(cache) = cache else { return call_twice(backend, request, chapter) };
+    let Some(cache) = cache else { return call_twice(backend, request, chapter, call) };
     let key = key(backend, request, schema_text);
     if let Some(reply) = cache.reply(&key)? {
         return Ok(reply);
     }
-    let reply = call_twice(backend, request, chapter)?;
+    let reply = call_twice(backend, request, chapter, call)?;
     cache.put_reply(&key, &reply)?;
     Ok(reply)
 }
 
 /// The backend's reply to `request`, asked a second time when the first call fails with [`Error::Model`]: one
 /// timeout or one reply that is not JSON should not end the run of a whole book, and a second in a row is no
-/// passing fault.
-fn call_twice(backend: &dyn Backend, request: &Request<'_>, chapter: &ChapterText) -> Result<Reply> {
+/// passing fault. The second failure names the chapter and `call`, which of its calls failed, since each has
+/// its own prompt to look into.
+fn call_twice(backend: &dyn Backend, request: &Request<'_>, chapter: &ChapterText, call: &str) -> Result<Reply> {
     match backend.call(request) {
         Err(Error::Model(_)) => backend.call(request).map_err(|error| match error {
             Error::Model(cause) => {
-                Error::Model(format!("chapter {} ({}), tried twice: {cause}", chapter.number, chapter.title))
+                Error::Model(format!("chapter {} ({}), {call}, tried twice: {cause}", chapter.number, chapter.title))
             }
             other => other,
         }),
@@ -192,14 +210,32 @@ impl Cache {
         replace(&self.reply_path(key), &kept.to_string())
     }
 
-    /// Writes what the check of the chapter at entry `toc_entry` turned down, and its notes, over what an
-    /// earlier run wrote.
-    fn put_rejected(&self, toc_entry: u32, rejected: &[Rejected], notes: &BTreeMap<&str, u32>) -> Result<()> {
-        let rejected: Vec<Value> =
-            rejected.iter().map(|rejected| json!({ "reason": rejected.reason, "item": rejected.item })).collect();
+    /// Writes what the checks of the chapter at entry `toc_entry` turned down, the first call's and then the
+    /// second's, each marked with its call, and `notes`, over what an earlier run wrote.
+    fn put_rejected(
+        &self,
+        toc_entry: u32,
+        first: &[Rejected],
+        reveal: &[Rejected],
+        notes: &BTreeMap<&str, u32>,
+    ) -> Result<()> {
+        let rejected: Vec<Value> = [("first", first), ("reveal", reveal)]
+            .into_iter()
+            .flat_map(|(call, rejected)| {
+                rejected
+                    .iter()
+                    .map(move |rejected| json!({ "call": call, "reason": rejected.reason, "item": rejected.item }))
+            })
+            .collect();
         let written = json!({ "rejected": rejected, "notes": notes });
         replace(&self.book.join("rejected").join(format!("{toc_entry:03}.json")), &format!("{written:#}"))
     }
+}
+
+/// What a chapter's two calls cost together, or `None` when either states no cost: the cost of one alone would
+/// read as the whole chapter's.
+fn sum_costs(first: Option<f64>, second: Option<f64>) -> Option<f64> {
+    Some(first? + second?)
 }
 
 /// A reply as [`Cache::put_reply`] keeps it, or `None` when `kept` is not one.
@@ -245,6 +281,14 @@ mod tests {
         let schema = json!({});
         let request = Request { system: "system", user: "user", schema: &schema };
         key(&*backend(spec, settings).unwrap(), &request, "{}")
+    }
+
+    #[test]
+    fn a_cost_is_known_only_when_both_calls_state_one() {
+        assert_eq!(sum_costs(None, None), None);
+        assert_eq!(sum_costs(Some(0.25), None), None);
+        assert_eq!(sum_costs(None, Some(0.25)), None);
+        assert_eq!(sum_costs(Some(0.25), Some(0.5)), Some(0.75));
     }
 
     #[test]

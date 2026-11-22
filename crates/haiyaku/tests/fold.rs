@@ -3,7 +3,7 @@
 mod common;
 
 use common::{keeper, keepers_light, keepers_return};
-use haiyaku::fold::{Cast, ChapterRef, Character, EntityKey, Fact, Folder, Relation, fold_book};
+use haiyaku::fold::{Cast, ChapterRef, Character, EntityKey, Fact, Folder, Overturn, Relation, fold_book};
 use haiyaku::log::{BookLog, Event, EventBody, Name, Position, RelationKind};
 
 fn key(log: &BookLog, id: &str) -> EntityKey {
@@ -47,16 +47,19 @@ fn with_events(book: BookLog, bodies: Vec<(u32, EventBody)>) -> BookLog {
     BookLog { events: events.collect(), ..book }
 }
 
-/// The cast of `earlier` read whole and then `later`, with the link that makes `other` of `later` one with
-/// `survivor` of `earlier` applied when chapter `linked` of `later` is in, as a cast at a position applies it.
-fn fold_linked(earlier: &BookLog, later: &BookLog, survivor: &str, other: &str, linked: u32) -> Cast {
+/// The cast of `earlier` read whole and then `later`, with the links, each of which makes its `other` of `later`
+/// one with its `survivor` of `earlier`, applied in turn when chapter `linked` of `later` is in, as a cast at a
+/// position applies them.
+fn fold_linked(earlier: &BookLog, later: &BookLog, links: &[(&str, &str)], linked: u32) -> Cast {
     let mut folder = Folder::new();
     folder.start_book(&earlier.book.sha256);
     earlier.events.iter().for_each(|event| folder.apply(event));
     folder.start_book(&later.book.sha256);
     let (before, after): (Vec<_>, Vec<_>) = later.events.iter().partition(|event| event.chapter <= linked);
     before.into_iter().for_each(|event| folder.apply(event));
-    folder.merge(&key(earlier, survivor), &key(later, other));
+    for (survivor, other) in links {
+        folder.merge(&key(earlier, survivor), &key(later, other));
+    }
     after.into_iter().for_each(|event| folder.apply(event));
     folder.finish()
 }
@@ -80,6 +83,28 @@ fn same_as(entity: &str, other: &str) -> EventBody {
 
 fn acquainted(from: &str, to: &str, note: &str) -> EventBody {
     EventBody::Relation { from: from.into(), to: to.into(), kind: RelationKind::Acquaintance, note: note.into() }
+}
+
+fn related(kind: RelationKind, from: &str, to: &str, note: &str) -> EventBody {
+    EventBody::Relation { from: from.into(), to: to.into(), kind, note: note.into() }
+}
+
+fn overturned(kind: RelationKind, from: &str, to: &str, note: &str) -> EventBody {
+    EventBody::Overturned { from: from.into(), to: to.into(), kind, note: note.into() }
+}
+
+/// `log` as far as a reader who has finished chapter `finished` has read it.
+fn up_to(log: &BookLog, finished: u32) -> BookLog {
+    BookLog { events: log.events.iter().filter(|event| event.chapter <= finished).cloned().collect(), ..log.clone() }
+}
+
+/// Each fact of the pair as its kind, its first and last chapters, and the chapter of the overturn that marks it.
+fn spans(cast: &Cast, a: &EntityKey, b: &EntityKey) -> Vec<(RelationKind, ChapterRef, ChapterRef, Option<ChapterRef>)> {
+    let span = |fact: &Fact| {
+        let at = fact.overturned.as_ref().map(|overturn| overturn.at.clone());
+        (fact.kind, fact.first.clone(), fact.last.clone(), at)
+    };
+    relation(cast, a, b).facts.iter().map(span).collect()
 }
 
 #[test]
@@ -117,6 +142,7 @@ fn owns_is_directed() {
             quote: "The keeper fed Pip, her gull, from her own plate.".into(),
             first: chapter(&k, 1),
             last: chapter(&k, 1),
+            overturned: None,
         }]
     );
 }
@@ -162,6 +188,7 @@ fn same_as_merges() {
             quote: "Ada nodded to the stranger, and he nodded back.".into(),
             first: chapter(&k, 2),
             last: chapter(&k, 3),
+            overturned: None,
         }]
     );
     assert_eq!(cast.relations.len(), 2);
@@ -256,6 +283,7 @@ fn a_merge_keeps_the_earlier_statement_of_a_fact() {
                 quote: "quote 3".into(),
                 first: chapter(&log, 1),
                 last: chapter(&log, 2),
+                overturned: None,
             },
             Fact {
                 kind: RelationKind::Ally,
@@ -264,6 +292,7 @@ fn a_merge_keeps_the_earlier_statement_of_a_fact() {
                 quote: "quote 5".into(),
                 first: chapter(&log, 2),
                 last: chapter(&log, 2),
+                overturned: None,
             },
         ]
     );
@@ -440,7 +469,7 @@ fn a_same_as_keeps_the_earlier_books_character() {
             ],
         );
         // The sailor is linked to Tom Reed from the later book's first chapter.
-        let cast = fold_linked(&k, &r, "tom", "sailor", 1);
+        let cast = fold_linked(&k, &r, &[("tom", "sailor")], 1);
 
         let keys: Vec<_> = cast.characters.iter().map(|character| &character.key).collect();
         assert_eq!(keys, [&key(&k, "ada"), &key(&k, "pip"), &key(&k, "tom")], "{entity} is {other}");
@@ -467,7 +496,7 @@ fn a_fuller_name_survives_a_link_whichever_chapter_gives_it() {
                 (named_in, EventBody::Named { entity: "sailor".into(), name: tom_reed.clone() }),
             ],
         );
-        let cast = fold_linked(&k, &r, "stranger", "sailor", 1);
+        let cast = fold_linked(&k, &r, &[("stranger", "sailor")], 1);
 
         assert_eq!(cast.characters.len(), 1);
         let stranger = character(&cast, &key(&k, "stranger"));
@@ -553,4 +582,236 @@ fn links_due_together_give_one_cast_in_either_order() {
     let to_tom = (&key(first, "tom"), &key(third, "mate"));
     let to_sailor = (&key(second, "sailor"), &key(third, "captain"));
     assert_eq!(fold_then_link(&books, &[to_tom, to_sailor]), fold_then_link(&books, &[to_sailor, to_tom]));
+}
+
+#[test]
+fn overturn_marks_the_fact_stated_before_it() {
+    let log = keeper_with(vec![
+        (1, introduced("ada", "the keeper")),
+        (1, introduced("tom", "the boatman")),
+        (1, related(RelationKind::Enemy, "ada", "tom", "quarrel over the light")),
+        (3, overturned(RelationKind::Enemy, "tom", "ada", "the quarrel was staged for the harbourmaster")),
+    ]);
+    let (ada, tom) = (key(&log, "ada"), key(&log, "tom"));
+    let fact = |overturned| Fact {
+        kind: RelationKind::Enemy,
+        from: None,
+        note: "quarrel over the light".into(),
+        quote: "quote 3".into(),
+        first: chapter(&log, 1),
+        last: chapter(&log, 1),
+        overturned,
+    };
+    let overturn = Overturn {
+        at: chapter(&log, 3),
+        note: "the quarrel was staged for the harbourmaster".into(),
+        quote: "quote 4".into(),
+    };
+
+    assert_eq!(relation(&fold_book(&log, 3), &ada, &tom).facts, [fact(Some(overturn))]);
+    // Before the overturning chapter the fact stands.
+    assert_eq!(relation(&fold_book(&log, 2), &ada, &tom).facts, [fact(None)]);
+}
+
+#[test]
+fn statement_after_an_overturn_makes_a_new_current_fact() {
+    let log = keeper_with(vec![
+        (1, introduced("ada", "the keeper")),
+        (1, introduced("tom", "the boatman")),
+        (1, related(RelationKind::Ally, "ada", "tom", "mend the lamp together")),
+        (2, overturned(RelationKind::Ally, "ada", "tom", "he broke the lamp himself")),
+        (3, related(RelationKind::Ally, "tom", "ada", "row out to the wreck together")),
+    ]);
+    let ch = |n| chapter(&log, n);
+    let cast = fold_book(&log, 3);
+    assert_eq!(
+        spans(&cast, &key(&log, "ada"), &key(&log, "tom")),
+        [(RelationKind::Ally, ch(1), ch(1), Some(ch(2))), (RelationKind::Ally, ch(3), ch(3), None)]
+    );
+    assert_eq!(relation(&cast, &key(&log, "ada"), &key(&log, "tom")).facts[1].note, "row out to the wreck together");
+}
+
+#[test]
+fn overturn_of_a_directed_kind_keeps_its_direction() {
+    let log = keeper_with(vec![
+        (1, introduced("ada", "the keeper")),
+        (1, introduced("tom", "the boatman")),
+        (1, related(RelationKind::Serves, "ada", "tom", "keeps the light for his boat")),
+        (1, related(RelationKind::Serves, "tom", "ada", "rows her mail over")),
+        (2, overturned(RelationKind::Serves, "ada", "tom", "the light was never lit for him")),
+    ]);
+    let (ada, tom) = (key(&log, "ada"), key(&log, "tom"));
+    let cast = fold_book(&log, 2);
+    let marks: Vec<_> = relation(&cast, &ada, &tom)
+        .facts
+        .iter()
+        .map(|fact| (fact.from.as_ref(), fact.overturned.as_ref().map(|overturn| overturn.at.chapter)))
+        .collect();
+    assert_eq!(marks, [(Some(&ada), Some(2)), (Some(&tom), None)]);
+}
+
+#[test]
+fn overturn_covers_a_statement_a_later_same_as_brings() {
+    let log = keeper_with(vec![
+        (1, introduced("ada", "the keeper")),
+        (1, introduced("tom", "the boatman")),
+        (1, introduced("stranger", "the stranger")),
+        (1, related(RelationKind::Ally, "ada", "stranger", "keeps watch with her")),
+        (2, related(RelationKind::Ally, "tom", "ada", "mend the lamp together")),
+        (3, overturned(RelationKind::Ally, "ada", "tom", "he came to wreck the light")),
+        (4, same_as("tom", "stranger")),
+    ]);
+    let ch = |n| chapter(&log, n);
+    let cast = fold_book(&log, 4);
+    // The stranger's statement was the same belief, made before the overturn under another id.
+    assert_eq!(spans(&cast, &key(&log, "ada"), &key(&log, "tom")), [(RelationKind::Ally, ch(1), ch(2), Some(ch(3)))]);
+    assert_eq!(relation(&cast, &key(&log, "ada"), &key(&log, "tom")).facts[0].note, "keeps watch with her");
+}
+
+#[test]
+fn statement_joined_after_the_overturn_stays_current() {
+    let log = keeper_with(vec![
+        (1, introduced("ada", "the keeper")),
+        (1, introduced("tom", "the boatman")),
+        (1, introduced("stranger", "the stranger")),
+        (1, related(RelationKind::Ally, "ada", "tom", "mend the lamp together")),
+        (3, overturned(RelationKind::Ally, "tom", "ada", "he came to wreck the light")),
+        (4, related(RelationKind::Ally, "ada", "stranger", "pulls her from the water")),
+        (5, same_as("tom", "stranger")),
+    ]);
+    let ch = |n| chapter(&log, n);
+    assert_eq!(
+        spans(&fold_book(&log, 5), &key(&log, "ada"), &key(&log, "tom")),
+        [(RelationKind::Ally, ch(1), ch(1), Some(ch(3))), (RelationKind::Ally, ch(4), ch(4), None)]
+    );
+}
+
+#[test]
+fn overturn_without_a_statement_marks_nothing() {
+    let log = keeper_with(vec![
+        (1, introduced("ada", "the keeper")),
+        (1, introduced("tom", "the boatman")),
+        (1, introduced("pip", "the gull")),
+        (1, acquainted("ada", "tom", "met on the jetty")),
+        // Nothing of its kind on the pair to cover, and a pair with nothing at all.
+        (2, overturned(RelationKind::Ally, "ada", "tom", "never on her side")),
+        (2, overturned(RelationKind::Owns, "ada", "pip", "the gull is nobody's")),
+        // An overturn never reaches forward.
+        (3, related(RelationKind::Ally, "tom", "ada", "mend the lamp together")),
+    ]);
+    let ch = |n| chapter(&log, n);
+    let cast = fold_book(&log, 3);
+    assert_eq!(
+        spans(&cast, &key(&log, "ada"), &key(&log, "tom")),
+        [(RelationKind::Acquaintance, ch(1), ch(1), None), (RelationKind::Ally, ch(3), ch(3), None)]
+    );
+    assert_eq!(cast.relations.len(), 1);
+}
+
+#[test]
+fn an_overturn_naming_a_character_not_yet_met_is_passed_over() {
+    let log = keeper_with(vec![
+        (1, introduced("ada", "the keeper")),
+        (1, introduced("stranger", "the stranger")),
+        (1, related(RelationKind::Ally, "ada", "stranger", "keeps watch with her")),
+        (2, overturned(RelationKind::Ally, "ada", "tom", "he came to wreck the light")),
+        (3, introduced("tom", "the boatman")),
+        (3, same_as("tom", "stranger")),
+    ]);
+    let ch = |n| chapter(&log, n);
+    assert_eq!(
+        spans(&fold_book(&log, 3), &key(&log, "ada"), &key(&log, "tom")),
+        [(RelationKind::Ally, ch(1), ch(1), None)]
+    );
+}
+
+#[test]
+fn each_overturn_of_a_kind_marks_the_statements_before_it() {
+    let log = keeper_with(vec![
+        (1, introduced("ada", "the keeper")),
+        (1, introduced("tom", "the boatman")),
+        (1, related(RelationKind::Ally, "ada", "tom", "mend the lamp together")),
+        (2, overturned(RelationKind::Ally, "ada", "tom", "he broke the lamp himself")),
+        (3, related(RelationKind::Ally, "tom", "ada", "row out to the wreck together")),
+        (4, overturned(RelationKind::Ally, "tom", "ada", "he holed the boat himself")),
+    ]);
+    let ch = |n| chapter(&log, n);
+    // The second overturn covers only the statement the first left standing.
+    assert_eq!(
+        spans(&fold_book(&log, 4), &key(&log, "ada"), &key(&log, "tom")),
+        [(RelationKind::Ally, ch(1), ch(1), Some(ch(2))), (RelationKind::Ally, ch(3), ch(3), Some(ch(4)))]
+    );
+}
+
+#[test]
+fn a_directed_overturn_reaches_a_statement_through_a_merge_either_way_round() {
+    // Either id may be the one merged away: the overturn's `from` is re-keyed when Tom is, the statement's when
+    // the stranger is, and either way the two run the same way once more.
+    for (survivor, other) in [("stranger", "tom"), ("tom", "stranger")] {
+        let log = keeper_with(vec![
+            (1, introduced("ada", "the keeper")),
+            (1, introduced("stranger", "the stranger")),
+            (1, introduced("tom", "the boatman")),
+            (1, related(RelationKind::Serves, "stranger", "ada", "carries her lamp oil")),
+            (3, overturned(RelationKind::Serves, "tom", "ada", "the oil was for his own boat")),
+            (4, same_as(survivor, other)),
+        ]);
+        let (ada, kept) = (key(&log, "ada"), key(&log, survivor));
+        let cast = fold_book(&log, 4);
+        let marks: Vec<_> = relation(&cast, &ada, &kept)
+            .facts
+            .iter()
+            .map(|fact| (fact.kind, fact.from.as_ref(), fact.overturned.as_ref().map(|overturn| overturn.at.chapter)))
+            .collect();
+        assert_eq!(marks, [(RelationKind::Serves, Some(&kept), Some(3))], "{survivor} survives");
+    }
+}
+
+/// The earlier book of a series that states Ada and Tom are allies in its first chapter.
+fn allies() -> BookLog {
+    keeper_with(vec![
+        (1, introduced("ada", "the keeper")),
+        (1, introduced("tom", "the boatman")),
+        (1, related(RelationKind::Ally, "ada", "tom", "mend the lamp together")),
+    ])
+}
+
+/// A later book that meets Ada and the old sailor in its first chapter and overturns their alliance in
+/// chapter `overturned_in`.
+fn allies_overturned(overturned_in: u32) -> BookLog {
+    with_events(
+        keepers_return(),
+        vec![
+            (1, introduced("ada", "Ada")),
+            (1, introduced("sailor", "the old sailor")),
+            (overturned_in, overturned(RelationKind::Ally, "sailor", "ada", "he came to wreck the light")),
+        ],
+    )
+}
+
+/// Ada and the old sailor of the later book are the earlier book's Ada and Tom.
+const ALLIES_LINKED: [(&str, &str); 2] = [("ada", "ada"), ("tom", "sailor")];
+
+#[test]
+fn overturn_reaches_an_earlier_book_through_a_link() {
+    let (k, r) = (allies(), allies_overturned(2));
+    let (ada, tom) = (key(&k, "ada"), key(&k, "tom"));
+
+    let cast = fold_linked(&k, &up_to(&r, 2), &ALLIES_LINKED, 1);
+    assert_eq!(spans(&cast, &ada, &tom), [(RelationKind::Ally, chapter(&k, 1), chapter(&k, 1), Some(chapter(&r, 2)))]);
+
+    let cast = fold_linked(&k, &up_to(&r, 1), &ALLIES_LINKED, 1);
+    assert_eq!(spans(&cast, &ada, &tom), [(RelationKind::Ally, chapter(&k, 1), chapter(&k, 1), None)]);
+}
+
+#[test]
+fn link_after_an_overturn_still_brings_the_fact_under_it() {
+    let (k, r) = (allies(), allies_overturned(1));
+    // The overturn is taken in while the later book's two still stand apart from the earlier book's, with
+    // nothing of their own to cover.
+    let cast = fold_linked(&k, &up_to(&r, 2), &ALLIES_LINKED, 2);
+    assert_eq!(
+        spans(&cast, &key(&k, "ada"), &key(&k, "tom")),
+        [(RelationKind::Ally, chapter(&k, 1), chapter(&k, 1), Some(chapter(&r, 1)))]
+    );
 }

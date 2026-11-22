@@ -162,6 +162,7 @@ Every event has `at`, the block holding the start of its quote, and
 | `alias{id, alias}` | another name or form of address |
 | `appeared{id}` | the entity is present in this chapter |
 | `relation{from, to, kind, note}` | a fact about two entities |
+| `overturned{from, to, kind, note}` | a later chapter shows a relation was never true; see [the reveals design](2026-11-22-haiyaku-reveals-design.md), "The overturned event" |
 | `same_as{id, other}` | two entities turn out to be one |
 | `merge`, `split`, `rename` | reserved for hand corrections; v1 never writes them |
 
@@ -177,12 +178,14 @@ The items the program rejects, and the model's raw replies, go to
 
 ### Extraction
 
-Extraction works as in the spike: one call per chapter, the model told that
-the reader has read to the end of that chapter, every item checked before it
-enters the log. A quote passes when its parts, reduced to letters and digits,
-appear in order in the chapter text. The program then finds the block where
-the quote starts and stores it as `at`. A run resumes after the last chapter
-it finished.
+Extraction works as in the spike: the model told that the reader has read to
+the end of the chapter, every item checked before it enters the log. Each
+chapter takes two calls, the spike's and a second for what the chapter
+reveals and overturns; see [the reveals
+design](2026-11-22-haiyaku-reveals-design.md), "The second call". A quote
+passes when its parts, reduced to letters and digits, appear in order in the
+chapter text. The program then finds the block where the quote starts and
+stores it as `at`. A run resumes after the last chapter it finished.
 
 The owner picks, once per book, which table-of-contents entries are the
 story. `haiyaku extract` without a range lists the entries and stops; with
@@ -249,8 +252,11 @@ passed. With the book scope it folds only this book.
 
 The answer lists each character with the best name so far, aliases, where it
 was first and last seen, and the ids merged into it; and each pair of
-characters with its relation facts (kind, note, first and last seen, quote).
-The quotes let taiyaku show why it says what it says.
+characters with its relation facts (kind, note, first and last seen, quote,
+and the chapter, note and quote of the overturn that marks a fact a later
+chapter showed was never true; see [the reveals
+design](2026-11-22-haiyaku-reveals-design.md), "The fold"). The quotes let
+taiyaku show why it says what it says.
 
 The cut-off is the chapter: the fold takes the events of the chapters the
 reader has finished, never of the one they are in. A reader in a document
@@ -282,6 +288,7 @@ keeps the tables in its one database.
 | `haiyaku_appearance` | `appeared` event | event, entity |
 | `haiyaku_relation` | `relation` event | event, from, to, kind, note |
 | `haiyaku_same_as` | `same_as` event | event, entity, other |
+| `haiyaku_overturn` | `overturned` event, from schema version 2; see [the reveals design](2026-11-22-haiyaku-reveals-design.md), "The overturned event" | event, from, to, kind, note |
 | `haiyaku_series`, `haiyaku_order`, `haiyaku_order_book` | series, reading order, book in an order | series, order name, rank, book |
 | `haiyaku_link` | link between books | order, later book and id, earlier book and id, how, quote, position |
 

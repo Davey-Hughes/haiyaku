@@ -163,19 +163,22 @@ fn read_log(conn: &Connection, sha256: &str) -> Result<BookLog> {
 /// [`Error::Invalid`] when an event has lost the row that holds its body; [`Error::Sqlite`] when the database
 /// cannot be read.
 pub fn read_events(conn: &Connection, sha256: &str, up_to_chapter: Option<u32>) -> Result<Vec<Event>> {
-    // An event has a row in exactly one of the four child tables, so three of the joins find nothing, and
-    // the fourth finding nothing either is the broken log `event_from_row` reports.
+    // An event has a row in exactly one of the five child tables, so four of the joins find nothing, and
+    // the fifth finding nothing either is the broken log `event_from_row` reports.
     let mut stmt = conn.prepare(
         "SELECT e.seq, e.chapter, e.document, e.block, e.type, e.quote,
                 n.entity AS name_entity, n.text, n.given, n.surname, n.title, n.title_sex,
                 a.entity AS appearance_entity,
                 r.from_entity, r.to_entity, r.kind, r.note,
-                s.entity AS same_as_entity, s.other
+                s.entity AS same_as_entity, s.other,
+                o.from_entity AS overturn_from, o.to_entity AS overturn_to, o.kind AS overturn_kind,
+                o.note AS overturn_note
          FROM haiyaku_event e
          LEFT JOIN haiyaku_name n ON n.book = e.book AND n.seq = e.seq
          LEFT JOIN haiyaku_appearance a ON a.book = e.book AND a.seq = e.seq
          LEFT JOIN haiyaku_relation r ON r.book = e.book AND r.seq = e.seq
          LEFT JOIN haiyaku_same_as s ON s.book = e.book AND s.seq = e.seq
+         LEFT JOIN haiyaku_overturn o ON o.book = e.book AND o.seq = e.seq
          WHERE e.book = ?1 AND (?2 IS NULL OR e.chapter <= ?2)
          ORDER BY e.seq",
     )?;
@@ -343,6 +346,10 @@ fn insert_events(conn: &Connection, book: &str, events: &[Event]) -> Result<()> 
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
     )?;
     let mut same_as = conn.prepare("INSERT INTO haiyaku_same_as (book, seq, entity, other) VALUES (?1, ?2, ?3, ?4)")?;
+    let mut overturn = conn.prepare(
+        "INSERT INTO haiyaku_overturn (book, seq, from_entity, to_entity, kind, note)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+    )?;
 
     for e in events {
         event.execute(params![book, e.seq, e.chapter, e.at.document, e.at.block, event_type(&e.body), e.quote])?;
@@ -364,6 +371,9 @@ fn insert_events(conn: &Connection, book: &str, events: &[Event]) -> Result<()> 
                 relation.execute(params![book, e.seq, from, to, kind.as_str(), note])?
             }
             EventBody::SameAs { entity, other } => same_as.execute(params![book, e.seq, entity, other])?,
+            EventBody::Overturned { from, to, kind, note } => {
+                overturn.execute(params![book, e.seq, from, to, kind.as_str(), note])?
+            }
         };
     }
     Ok(())
@@ -378,6 +388,7 @@ fn event_type(body: &EventBody) -> &'static str {
         EventBody::Appeared { .. } => "appeared",
         EventBody::Relation { .. } => "relation",
         EventBody::SameAs { .. } => "same_as",
+        EventBody::Overturned { .. } => "overturned",
     }
 }
 
@@ -421,6 +432,16 @@ fn event_from_row(row: &Row<'_>, book: &str) -> Result<Event> {
         }
         "same_as" => {
             EventBody::SameAs { entity: body_in("haiyaku_same_as", "same_as_entity")?, other: row.get("other")? }
+        }
+        "overturned" => {
+            let from = body_in("haiyaku_overturn", "overturn_from")?;
+            let kind: String = row.get("overturn_kind")?;
+            EventBody::Overturned {
+                from,
+                to: row.get("overturn_to")?,
+                kind: known(RelationKind::parse(&kind), "relation kind", &kind)?,
+                note: row.get("overturn_note")?,
+            }
         }
         other => return Err(unknown("event type", other)),
     };

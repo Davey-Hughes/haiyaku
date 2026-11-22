@@ -2,10 +2,11 @@
 //! given ids, the names each carries, the chapters each was seen in, and which turned out to be one.
 
 use std::cmp::Reverse;
+use std::collections::HashSet;
 
 use super::text::{locate_name, locate_surname, reduce};
 use crate::book::ChapterText;
-use crate::log::{Entity, EntityKind, Event, EventBody, Name, Position};
+use crate::log::{Entity, EntityKind, Event, EventBody, Name, Position, RelationKind};
 
 /// What extraction knows of the book so far: the characters, their names, the merges, and every event kept.
 #[derive(Debug, Default)]
@@ -13,6 +14,23 @@ pub struct Roster {
     events: Vec<Event>,
     /// In the order introduced, so the one at index `i` is `c{i + 1}`.
     characters: Vec<Character>,
+}
+
+/// A relation the roster holds ([`Roster::held`]), its ends the survivors of the ends it was stated with. For a
+/// [directed](RelationKind::directed) kind it runs from `from` to `to`; for the others the two are in no order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Held<'a> {
+    pub(crate) from: &'a str,
+    pub(crate) to: &'a str,
+    pub(crate) kind: RelationKind,
+    pub(crate) note: &'a str,
+}
+
+impl Held<'_> {
+    /// Whether this is the fact a relation of `kind` from `from` to `to` states ([`fact`]).
+    pub(crate) fn is_fact(&self, from: &str, kind: RelationKind, to: &str) -> bool {
+        fact(self.from, self.kind, self.to) == fact(from, kind, to)
+    }
 }
 
 /// One id given out, and what its own events say of it. A character merged away keeps its record, and what the
@@ -87,6 +105,41 @@ impl Roster {
         }
     }
 
+    /// The relations the roster holds, as both calls' prompts list them and an overturn is checked against them:
+    /// each fact ([`fact`]) stated since the last overturn of it, once, under the note first given since then, in
+    /// the order first stated since then.
+    ///
+    /// Each end is taken for its survivor first ([`Roster::survivor`]), the ends of an overturn too, so a merge does
+    /// not drop a relation, and a relation whose two ends are now one character is held by none. An overturn covers
+    /// every statement of its fact made before it, as the fold has it: the fact leaves the list until a later
+    /// chapter states it again.
+    pub(crate) fn held(&self) -> Vec<Held<'_>> {
+        // Each overturn's fact, with its place in the log: it covers a statement placed before it.
+        let overturns: Vec<(usize, (&str, &str, &str))> = self
+            .events
+            .iter()
+            .enumerate()
+            .filter_map(|(index, event)| match &event.body {
+                EventBody::Overturned { from, to, kind, .. } => {
+                    Some((index, fact(self.survivor(from), *kind, self.survivor(to))))
+                }
+                _ => None,
+            })
+            .collect();
+        let mut facts = HashSet::new();
+        let mut held = Vec::new();
+        for (index, event) in self.events.iter().enumerate() {
+            let EventBody::Relation { from, to, kind, note } = &event.body else { continue };
+            let (from, to) = (self.survivor(from), self.survivor(to));
+            let stated = fact(from, *kind, to);
+            let covered = overturns.iter().any(|(at, overturned)| *at > index && *overturned == stated);
+            if from != to && !covered && facts.insert(stated) {
+                held.push(Held { from, to, kind: *kind, note });
+            }
+        }
+        held
+    }
+
     /// The id the next character introduced is given.
     pub(crate) fn next_id(&self) -> String {
         format!("c{}", self.characters.len() + 1)
@@ -155,7 +208,7 @@ impl Roster {
             }
             EventBody::Named { entity, name } => self.give(entity, name, true),
             EventBody::Alias { entity, name } => self.give(entity, name, false),
-            EventBody::Appeared { .. } | EventBody::Relation { .. } => {}
+            EventBody::Appeared { .. } | EventBody::Relation { .. } | EventBody::Overturned { .. } => {}
             EventBody::SameAs { entity, other } => {
                 if let (Some(survivor), Some(other)) = (self.index(entity), self.index(other)) {
                     let (survivor, other) = (self.root(survivor), self.root(other));
@@ -229,6 +282,12 @@ fn full_name(name: &Name) -> Option<(String, String)> {
     Some((reduce(name.given.as_deref()?), reduce(name.surname.as_deref()?)))
 }
 
+/// The fact a relation of `kind` from `from` to `to` states, as a key: a kind that is not directed holds between the
+/// two alike, so its fact is one whichever way round it is stated, as the fold keeps it.
+pub(crate) fn fact<'a>(from: &'a str, kind: RelationKind, to: &'a str) -> (&'static str, &'a str, &'a str) {
+    if kind.directed() || from < to { (kind.as_str(), from, to) } else { (kind.as_str(), to, from) }
+}
+
 /// The ids an event names.
 fn named_ids(body: &EventBody) -> Vec<&str> {
     match body {
@@ -236,7 +295,7 @@ fn named_ids(body: &EventBody) -> Vec<&str> {
         | EventBody::Named { entity, .. }
         | EventBody::Alias { entity, .. }
         | EventBody::Appeared { entity } => vec![entity],
-        EventBody::Relation { from, to, .. } => vec![from, to],
+        EventBody::Relation { from, to, .. } | EventBody::Overturned { from, to, .. } => vec![from, to],
         EventBody::SameAs { entity, other } => vec![entity, other],
     }
 }

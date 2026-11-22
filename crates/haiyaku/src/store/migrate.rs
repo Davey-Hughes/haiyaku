@@ -6,11 +6,11 @@ use super::in_transaction;
 use crate::{Error, Result};
 
 /// The schema version this build reads and writes.
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 
 /// Migration `i` takes the schema from version `i` to version `i + 1`. A file in this list never changes
 /// once a database has run it: that database is past it and would never see the change.
-const MIGRATIONS: &[&str] = &[include_str!("schema/001_initial.sql")];
+const MIGRATIONS: &[&str] = &[include_str!("schema/001_initial.sql"), include_str!("schema/002_overturned.sql")];
 
 // `migrate_with` takes the newest version from the length of its list, and callers compare against
 // `SCHEMA_VERSION`: a migration added without the bump must not build.

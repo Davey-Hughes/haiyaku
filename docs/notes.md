@@ -3,6 +3,96 @@
 Findings and measurements that are not worth a design doc but should not be
 worked out again. Newest section first.
 
+## Reveals acceptance, 2026-11-22: Sorcerer's Stone in English and Korean
+
+The build of [the reveals plan](superpowers/plans/2026-11-22-haiyaku-reveals.md),
+with its second call a chapter, extracted the 17 chapters of each book
+(English entries 4-20, Korean 5-21) on Claude Sonnet, the two books in
+parallel. Each chapter's first call missed the reply cache from chapter 2
+on, because the new name rule (O13) changes the roster a prompt carries.
+
+| Book | Time | Kept | Rejected | Share | Cost | Plan 2 run 3 |
+| --- | --- | --- | --- | --- | --- | --- |
+| English | 353 s | 515 | 4 | 0.8% | 2.27 USD | 249 s, 1.34 USD |
+| Korean | 381 s | 477 | 8 | 1.7% | 3.19 USD | 279 s, 1.91 USD |
+
+| Check | English | Korean |
+| --- | --- | --- |
+| Share at most 3% (EN), 5% (KO); no two characters with one full name | pass, 79 characters | pass, 79 characters |
+| The boy met by description at 5, named at 6 | pass | pass |
+| Hagrid's creatures by `owns` | pass | pass |
+| The mother's family relations at 6 | | pass |
+| Both reveals at 17, not before | pass | pass |
+| The belief that Snape is Voldemort's ally overturned at 17, no overturn of Snape's relations before 17 | pass | no such belief recorded; no early overturn |
+| Quirrell and Voldemort stay two characters | pass | pass |
+| Mrs. Weasley shown by a name | pass, from chapter 17 | |
+
+- **The first call found both reveals in both books this time,** so the
+  run does not test the second call's catch; the hand trial did (6 of 6
+  samples, in the section below).
+- **The second calls added 36 relations in English and 30 in Korean**
+  (18% of each book's relations) and 2 and 3 overturns, with no item
+  rejected.
+- **The overturns:** in English, Snape's alliance with Voldemort at
+  chapter 17, and at chapter 16 an enmity between Hermione and Neville that
+  the same chapter's first call had recorded. In Korean, at chapter 17,
+  the enmity of Ron and of Hermione towards Snape and a rivalry between
+  Snape and Quirrell. The Ron overturn also covers an earlier enmity that
+  held, and the rivalry overturn is doubtful (O16).
+- **Mrs. Weasley takes her name only at chapter 17 in English:** the
+  chapter-6 reply never gave it, so O13 had nothing to raise there.
+- **Korean still has second characters** for the mother of chapter 6 and
+  for the parents in the mirror (O17).
+- Spend: 5.46 USD, against the design's estimate of about 6.5.
+
+## A second call per chapter, 2026-11-22: a trial on chapters 11, 16 and 17
+
+Before building the second call that O11 asks for, it was tried by hand on
+run 3's state of Sorcerer's Stone. A stand-in `claude` captured the
+first call's prompt and arguments for chapters 11, 16 and 17 of each
+book; the second call's prompt was written from them and sent to Claude
+Sonnet with the same system text and arguments. The prompt lists the
+characters the first call's prompt lists plus those the first call
+introduced, and the relations between them, the first call's included.
+
+For chapter 17 the test was strict: both reveals (Snape protecting Harry,
+Quirrell serving Voldemort) were taken out of the relations the call was
+shown, as if the first call had missed them, and in English so was the
+same-as that merged Quirrell into Voldemort. Chapters 11 and 16 were sent
+as they stand, to catch an early reveal and to count the noise.
+
+Round 1 asked for relations the chapter "establishes, reveals or changes".
+Round 2 asked only for what the chapter reveals, and added a second list
+for relations the chapter shows were not true. The wording is in
+[the reveals design](superpowers/specs/2026-11-22-haiyaku-reveals-design.md).
+
+| | Round 1 | Round 2 |
+| --- | --- | --- |
+| Both reveals back at chapter 17 | 6 of 6 samples | 6 of 6 samples |
+| An early reveal at chapters 11 and 16 | none | none |
+| Relations a call | 10.1 | 2.4 |
+| Relations the call was shown already, a call | 2.6 | 0.1 |
+| Quotes that pass the check | 100 of 101 | 24 of 24, 6 of 6 overturns |
+| Spend, 10 calls | 0.52 USD | 0.53 USD |
+
+- **Round 1 is noisy.** Beside the reveals it gave 6 to 15 relations a
+  chapter: `mentor` for a single scolding, `serves` for the school
+  nurse, notes that read "placeholder" and "none", and pairs given in both
+  directions.
+- **Round 2 overturned the stale belief.** All three English samples marked
+  "Snape ally Voldemort" (chapter 15, Harry's belief) as not true; round 1
+  never touched it, because it could only add. Korean run 3 holds no such
+  relation.
+- **One overturn is arguable.** Three of the six chapter-17 samples also
+  overturned "Snape enemy Harry", though the chapter shows that Snape
+  protected Harry while he hated Harry's father.
+- **The second call costs about what the first does.** A first sample cost
+  0.05 to 0.11 USD against run 3's 0.07 to 0.13 for the same chapters:
+  the chapter text is most of the input. A repeat of the same prompt within
+  the hour cost about 0.01 USD from the Claude CLI's prompt cache.
+- Round 2 still records children's suspicions as relations (in English
+  chapter 11, Hermione and Ron as enemies of Snape).
+
 ## Plan 2 acceptance, 2026-11-22: Sorcerer's Stone in English and Korean
 
 The `haiyaku` binary extracted the 17 chapters of each book (English

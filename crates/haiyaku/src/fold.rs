@@ -57,7 +57,8 @@ pub struct Relation {
     pub facts: Vec<Fact>,
 }
 
-/// One thing the text says of a pair, however often it says it.
+/// One thing the text says of a pair, however often it says it. An overturn closes it: the statements it covers
+/// make one fact, marked with it, and a later statement of the same kind starts another.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Fact {
     pub kind: RelationKind,
@@ -69,6 +70,17 @@ pub struct Fact {
     pub quote: String,
     pub first: ChapterRef,
     pub last: ChapterRef,
+    /// Set when a later chapter showed the fact was never true; `None` for a fact that stands.
+    pub overturned: Option<Overturn>,
+}
+
+/// The event that showed a fact was never true.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Overturn {
+    /// The chapter whose overturned event covers the fact.
+    pub at: ChapterRef,
+    pub note: String,
+    pub quote: String,
 }
 
 /// A chapter as the fold orders it: by the book's place in the order the books were started, then by the
@@ -124,16 +136,58 @@ impl Member {
     }
 }
 
-/// A fact while events are still coming in.
+/// What one event says of a pair: that a fact holds, or, as an overturn, that it never held.
 #[derive(Debug)]
 struct Claim {
     kind: RelationKind,
+    /// As a fact's `from`.
     from: Option<EntityKey>,
     note: String,
     quote: String,
-    /// The first event that stated it, whose note and quote it keeps.
     origin: Origin,
-    last: Place,
+}
+
+/// What the events say of one pair, an entry per event. They are combined into facts only in `finish`: until
+/// then a merge can still bring a statement made before an overturn, or an overturn made after statements,
+/// and so change which statements make one fact.
+#[derive(Debug, Default)]
+struct Pair {
+    stated: Vec<Claim>,
+    overturned: Vec<Claim>,
+}
+
+impl Pair {
+    /// The facts the statements make, in the order of their first statements. Each overturn covers the
+    /// statements of its kind, and for a directed kind of its direction, made before it that no earlier overturn
+    /// covers; they make one fact, marked with it. Those after the last overturn make the fact that stands.
+    fn facts(mut self, chapter: impl Fn(Place) -> ChapterRef) -> Vec<Fact> {
+        self.stated.sort_by_key(|claim| claim.origin);
+        self.overturned.sort_by_key(|claim| claim.origin);
+        // Each fact with the overturn that covers it, by its index in `overturned`.
+        let mut facts: Vec<(Option<usize>, Fact)> = Vec::new();
+        for claim in self.stated {
+            // Only a directed kind has a `from`, so this matches the kind, and the direction for those.
+            let alike = |held: &Claim| held.kind == claim.kind && held.from == claim.from;
+            let cover = self.overturned.iter().position(|overturn| alike(overturn) && claim.origin < overturn.origin);
+            let at = chapter(claim.origin.place);
+            let same = |(covered, fact): &&mut (Option<usize>, Fact)| {
+                *covered == cover && fact.kind == claim.kind && fact.from == claim.from
+            };
+            match facts.iter_mut().find(same) {
+                // The statements come in order, so this one is the latest yet.
+                Some((_, fact)) => fact.last = at,
+                None => {
+                    let overturned = cover.map(|index| {
+                        let Claim { origin, note, quote, .. } = &self.overturned[index];
+                        Overturn { at: chapter(origin.place), note: note.clone(), quote: quote.clone() }
+                    });
+                    let Claim { kind, from, note, quote, .. } = claim;
+                    facts.push((cover, Fact { kind, from, note, quote, first: at.clone(), last: at, overturned }));
+                }
+            }
+        }
+        facts.into_iter().map(|(_, fact)| fact).collect()
+    }
 }
 
 /// Folds events one at a time, across the books of a series.
@@ -144,7 +198,7 @@ pub struct Folder {
     /// The characters that stand for themselves. One merged away is a key of `merged_into` instead.
     members: BTreeMap<EntityKey, Member>,
     /// By pair, the lesser key first, and only between members.
-    relations: BTreeMap<(EntityKey, EntityKey), Vec<Claim>>,
+    relations: BTreeMap<(EntityKey, EntityKey), Pair>,
     /// Each character merged away, and the one it was merged into, which may itself have been merged since.
     merged_into: BTreeMap<EntityKey, EntityKey>,
 }
@@ -164,8 +218,8 @@ impl Folder {
     }
 
     /// Takes in one event of the book last started. An entity that has not been introduced is passed over,
-    /// and a relation or a merge with one does nothing. Introducing a character again names it, as a `Named`
-    /// event would.
+    /// and a relation, an overturn or a merge with one does nothing. Introducing a character again names it,
+    /// as a `Named` event would.
     ///
     /// A `SameAs` keeps `entity` and merges `other` into it. Where the two stand for characters of
     /// different books, as one does once a link has joined it to an earlier book's, the character of the
@@ -208,7 +262,7 @@ impl Folder {
             EventBody::Appeared { entity } => {
                 self.seen(&self.key(book, entity), at.place);
             }
-            EventBody::Relation { from, to, kind, note } => {
+            EventBody::Relation { from, to, kind, note } | EventBody::Overturned { from, to, kind, note } => {
                 let (from, to) = (self.key(book, from), self.key(book, to));
                 let known = [&from, &to].map(|key| self.seen(key, at.place).is_some());
                 if known == [true, true] && from != to {
@@ -218,9 +272,13 @@ impl Folder {
                         note: note.clone(),
                         quote: event.quote.clone(),
                         origin: at,
-                        last: at.place,
                     };
-                    self.claim(&from, &to, claim);
+                    let pair = self.pair(&from, &to);
+                    if matches!(event.body, EventBody::Overturned { .. }) {
+                        pair.overturned.push(claim);
+                    } else {
+                        pair.stated.push(claim);
+                    }
                 }
             }
             EventBody::SameAs { entity, other } => {
@@ -232,9 +290,9 @@ impl Folder {
         }
     }
 
-    /// Makes `other` one with `survivor`, which takes its names, its relations and the ids merged into it,
-    /// and is shown under its name where that name is the fuller of the two. From here on an event that names
-    /// `other` is about `survivor`.
+    /// Makes `other` one with `survivor`, which takes its names, its relations and their overturns, and the ids
+    /// merged into it, and is shown under its name where that name is the fuller of the two. From here on an
+    /// event that names `other` is about `survivor`.
     ///
     /// Each of the two is first taken for the character it stands for after the merges so far. Where those
     /// are characters of different books, the one whose book was started first survives, whichever argument
@@ -276,7 +334,7 @@ impl Folder {
         kept.last = kept.last.max(gone.last);
 
         let mut moved = Vec::new();
-        self.relations.retain(|(a, b), claims| {
+        self.relations.retain(|(a, b), pair| {
             let partner = if *a == other {
                 b
             } else if *b == other {
@@ -284,20 +342,22 @@ impl Folder {
             } else {
                 return true;
             };
-            moved.push((partner.clone(), std::mem::take(claims)));
+            moved.push((partner.clone(), std::mem::take(pair)));
             false
         });
-        for (partner, claims) in moved {
+        for (partner, mut pair) in moved {
             // The pair of the two that are now one: a character has no relation with itself.
             if partner == survivor {
                 continue;
             }
-            for mut claim in claims {
+            for claim in pair.stated.iter_mut().chain(&mut pair.overturned) {
                 if claim.from.as_ref() == Some(&other) {
                     claim.from = Some(survivor.clone());
                 }
-                self.claim(&survivor, &partner, claim);
             }
+            let held = self.pair(&survivor, &partner);
+            held.stated.append(&mut pair.stated);
+            held.overturned.append(&mut pair.overturned);
         }
         self.merged_into.insert(other, survivor);
     }
@@ -318,21 +378,13 @@ impl Folder {
             Character { key, name, aliases, first: chapter(introduced.place), last: chapter(last), merged }
         });
 
+        // A pair with overturns and no statement has no fact to show.
         let mut pairs: Vec<_> = relations
             .into_iter()
-            .map(|(pair, mut claims)| {
-                claims.sort_by_key(|claim| claim.origin);
-                (claims.first().map(|claim| claim.origin.place), pair, claims)
-            })
+            .filter_map(|(pair, held)| Some((held.stated.iter().map(|claim| claim.origin).min()?.place, pair, held)))
             .collect();
         pairs.sort_by_key(|(first, ..)| *first);
-        let relations = pairs.into_iter().map(|(_, (a, b), claims)| {
-            let facts = claims.into_iter().map(|claim| {
-                let Claim { kind, from, note, quote, origin, last } = claim;
-                Fact { kind, from, note, quote, first: chapter(origin.place), last: chapter(last) }
-            });
-            Relation { a, b, facts: facts.collect() }
-        });
+        let relations = pairs.into_iter().map(|(_, (a, b), held)| Relation { a, b, facts: held.facts(chapter) });
 
         Cast { characters: characters.collect(), relations: relations.collect() }
     }
@@ -363,23 +415,10 @@ impl Folder {
         Some(member)
     }
 
-    /// Adds a fact to the pair of `x` and `y`. Where the pair holds the fact already the two become one,
-    /// which keeps the note and the quote of whichever was stated first.
-    fn claim(&mut self, x: &EntityKey, y: &EntityKey, claim: Claim) {
+    /// What the events so far say of the pair of `x` and `y`, whichever way round they are named.
+    fn pair(&mut self, x: &EntityKey, y: &EntityKey) -> &mut Pair {
         let pair = if x <= y { (x.clone(), y.clone()) } else { (y.clone(), x.clone()) };
-        let claims = self.relations.entry(pair).or_default();
-        // Only a directed kind has a `from`, so this finds one fact per kind, and per direction for those.
-        match claims.iter_mut().find(|held| held.kind == claim.kind && held.from == claim.from) {
-            Some(held) => {
-                let last = held.last.max(claim.last);
-                // A merge can bring the earlier statement of a fact the survivor holds already.
-                if claim.origin < held.origin {
-                    *held = claim;
-                }
-                held.last = last;
-            }
-            None => claims.push(claim),
-        }
+        self.relations.entry(pair).or_default()
     }
 }
 

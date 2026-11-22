@@ -16,7 +16,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use common::epub::{KEEPER_TOC, keeper_epub, keeper_replies, relation};
-use haiyaku::log::EventBody;
+use haiyaku::log::{BookLog, Event, EventBody, Position, RelationKind};
 use haiyaku::store::{read_book, sha256_file, write_book};
 use rusqlite::Connection;
 use serde_json::{Value, json};
@@ -96,11 +96,41 @@ impl Sandbox {
         self.command().args(["show", &self.book]).args(more).output().unwrap()
     }
 
+    /// Writes `log` straight into the default database as the log of the sandbox's book. `show` finds a book by
+    /// the hash of its file and reads nothing else of it, so the book need not hold the log's text.
+    fn store(&self, mut log: BookLog) {
+        log.book.sha256 = self.sha256();
+        fs::create_dir_all(self.path("data/haiyaku")).unwrap();
+        let mut conn = Connection::open(self.path("data/haiyaku/haiyaku.db")).unwrap();
+        conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+        haiyaku::store::migrate(&conn).unwrap();
+        write_book(&mut conn, &log).unwrap();
+    }
+
     /// How many chapters the database at `relative` holds for the book.
     fn chapters_stored(&self, relative: &str) -> usize {
         let conn = Connection::open(self.path(relative)).unwrap();
         read_book(&conn, &self.sha256()).unwrap().chapters.len()
     }
+}
+
+/// The note and the quote of the overturn [`keeper_with_overturn`] adds.
+const OVERTURN_NOTE: &str = "the gull came with the lighthouse";
+const OVERTURN_QUOTE: &str = "Pip had never been hers: the gull came with the lighthouse.";
+
+/// The keeper's book with an overturn in chapter 3 of the fact chapter 1 states, that the keeper owns Pip.
+fn keeper_with_overturn() -> BookLog {
+    let mut log = common::keeper();
+    let seq = log.events.last().unwrap().seq + 1;
+    let body = EventBody::Overturned {
+        from: "ada".into(),
+        to: "pip".into(),
+        kind: RelationKind::Owns,
+        note: OVERTURN_NOTE.into(),
+    };
+    let at = Position { document: 3, block: 9 };
+    log.events.push(Event { seq, chapter: 3, at, quote: OVERTURN_QUOTE.into(), body });
+    log
 }
 
 /// The text of a stream the binary wrote.
@@ -179,11 +209,11 @@ fn extract_without_chapters_lists_the_table_of_contents() {
 #[test]
 fn default_database_follows_xdg_data_home() {
     let sandbox = Sandbox::new();
-    let output = sandbox.extract("1-3", &sandbox.replies("replies", 3), &[]);
+    let output = sandbox.extract("1-3", &sandbox.replies("replies", 6), &[]);
     let stdout = status(&output, 0);
     assert_eq!(sandbox.chapters_stored("data/haiyaku/haiyaku.db"), 3);
     let replies = sandbox.path("cache/haiyaku").join(sandbox.sha256()).join("replies");
-    assert_eq!(fs::read_dir(&replies).unwrap().count(), 3);
+    assert_eq!(fs::read_dir(&replies).unwrap().count(), 6, "two calls a chapter");
     assert!(!sandbox.path("home").exists(), "with both XDG variables set, nothing goes under HOME");
 
     let stderr = text(&output.stderr);
@@ -200,7 +230,7 @@ fn default_database_follows_xdg_data_home() {
 #[test]
 fn chapter_line_shows_its_number_and_its_entry() {
     let sandbox = Sandbox::new();
-    let output = sandbox.extract("2-3", &sandbox.replies("replies", 3), &[]);
+    let output = sandbox.extract("2-3", &sandbox.replies("replies", 6), &[]);
     status(&output, 0);
     let stderr = text(&output.stderr);
     let lines: Vec<&str> = stderr.lines().collect();
@@ -212,7 +242,7 @@ fn chapter_line_shows_its_number_and_its_entry() {
 #[test]
 fn relative_xdg_value_is_ignored() {
     let sandbox = Sandbox::new();
-    let backend = sandbox.replies("replies", 3);
+    let backend = sandbox.replies("replies", 6);
     let mut command = sandbox.command();
     command.env("XDG_DATA_HOME", "rel");
     status(&sandbox.extract_with(command, "1-3", &backend, &[]), 0);
@@ -224,7 +254,7 @@ fn relative_xdg_value_is_ignored() {
 fn db_flag_names_the_database() {
     let sandbox = Sandbox::new();
     let db = sandbox.path("elsewhere/books.db");
-    let backend = sandbox.replies("replies", 3);
+    let backend = sandbox.replies("replies", 6);
     let mut command = sandbox.command();
     command.arg("--db").arg(&db);
     status(&sandbox.extract_with(command, "1-3", &backend, &[]), 0);
@@ -235,7 +265,7 @@ fn db_flag_names_the_database() {
 #[test]
 fn no_cache_flag_writes_no_cache() {
     let sandbox = Sandbox::new();
-    status(&sandbox.extract("1-3", &sandbox.replies("replies", 3), &["--no-cache"]), 0);
+    status(&sandbox.extract("1-3", &sandbox.replies("replies", 6), &["--no-cache"]), 0);
     assert_eq!(sandbox.chapters_stored("data/haiyaku/haiyaku.db"), 3);
     assert!(!sandbox.path("cache").exists());
 }
@@ -243,7 +273,7 @@ fn no_cache_flag_writes_no_cache() {
 #[test]
 fn no_cache_flag_reads_no_cache() {
     let sandbox = Sandbox::new();
-    status(&sandbox.extract("1-3", &sandbox.replies("replies", 3), &[]), 0);
+    status(&sandbox.extract("1-3", &sandbox.replies("replies", 6), &[]), 0);
     let output = sandbox.extract("1-3", &sandbox.replies("empty", 0), &["--no-cache", "--replace"]);
     status(&output, 1);
     assert!(text(&output.stderr).contains("out of recorded replies"), "{}", text(&output.stderr));
@@ -316,7 +346,7 @@ fn progress_that_cannot_be_written_fails_once_the_log_is_stored() {
     // Every write to /dev/full fails, so no line reaches stderr.
     let mut command = sandbox.command();
     command.stderr(fs::OpenOptions::new().write(true).open("/dev/full").unwrap());
-    let output = sandbox.extract_with(command, "1-3", &sandbox.replies("replies", 3), &[]);
+    let output = sandbox.extract_with(command, "1-3", &sandbox.replies("replies", 6), &[]);
     assert!(status(&output, 1).contains("3 chapters"));
     assert_eq!(sandbox.chapters_stored("data/haiyaku/haiyaku.db"), 3);
 }
@@ -324,10 +354,10 @@ fn progress_that_cannot_be_written_fails_once_the_log_is_stored() {
 #[test]
 fn second_extract_uses_the_cache() {
     let sandbox = Sandbox::new();
-    let backend = sandbox.replies("replies", 3);
+    let backend = sandbox.replies("replies", 6);
     status(&sandbox.extract("1-3", &backend, &[]), 0);
     // The same directory, so the same cache key, with nothing left in it: only the cache can answer the run.
-    for number in 1..=3 {
+    for number in 1..=6 {
         fs::remove_file(sandbox.path("replies").join(format!("{number:03}.json"))).unwrap();
     }
     status(&sandbox.extract("1-3", &backend, &["--replace"]), 0);
@@ -357,7 +387,7 @@ fn bad_range_calls_no_model() {
 #[test]
 fn failed_run_stores_no_book() {
     let sandbox = Sandbox::new();
-    let output = sandbox.extract("1-3", &sandbox.replies("replies", 1), &[]);
+    let output = sandbox.extract("1-3", &sandbox.replies("replies", 2), &[]);
     status(&output, 1);
     assert!(text(&output.stderr).contains("chapter 2"), "{}", text(&output.stderr));
     // The database is opened before the run, so it may be there, but it holds nothing of the book.
@@ -369,7 +399,7 @@ fn failed_run_stores_no_book() {
 #[test]
 fn extract_of_a_stored_book_needs_replace() {
     let sandbox = Sandbox::new();
-    status(&sandbox.extract("1-3", &sandbox.replies("replies", 3), &[]), 0);
+    status(&sandbox.extract("1-3", &sandbox.replies("replies", 6), &[]), 0);
     let before = status(&sandbox.show(&[]), 0);
 
     // No replies to hand out: a call to the model would fail as out of them.
@@ -380,7 +410,7 @@ fn extract_of_a_stored_book_needs_replace() {
     assert!(stderr.contains("--replace") && !stderr.contains("out of recorded replies"), "{stderr}");
     assert_eq!(status(&sandbox.show(&[]), 0), before);
 
-    status(&sandbox.extract("1-2", &sandbox.replies("again", 2), &["--replace"]), 0);
+    status(&sandbox.extract("1-2", &sandbox.replies("again", 4), &["--replace"]), 0);
     assert_eq!(sandbox.chapters_stored("data/haiyaku/haiyaku.db"), 2);
 }
 
@@ -549,7 +579,7 @@ fn chapters_that_are_not_a_range_are_a_usage_error() {
 #[test]
 fn extract_then_show() {
     let sandbox = Sandbox::new();
-    status(&sandbox.extract("1-3", &sandbox.replies("replies", 3), &[]), 0);
+    status(&sandbox.extract("1-3", &sandbox.replies("replies", 6), &[]), 0);
 
     let stdout = status(&sandbox.show(&[]), 0);
     // The stranger of chapter 2 is Tom Reed, and was met in chapter 2.
@@ -585,19 +615,89 @@ fn directed_fact_runs_from_its_source() {
     let mut first: Value = serde_json::from_str(&keeper_replies()[0]).unwrap();
     let quote = "The keeper fed Pip, her gull, from her own plate.";
     first["relations"] = json!([relation("new2", "new1", "serves", "feeds from her plate", quote)]);
-    status(&sandbox.extract("1", &sandbox.recorded("replies", &[first.to_string()]), &[]), 0);
+    let replies = [first.to_string(), keeper_replies().swap_remove(1)];
+    status(&sandbox.extract("1", &sandbox.recorded("replies", &replies), &[]), 0);
     let stdout = status(&sandbox.show(&[]), 0);
     assert_eq!(section(&stdout, "Relations"), ["Pip -> the keeper: serves, feeds from her plate"], "{stdout}");
 }
 
 #[test]
+fn show_marks_an_overturned_fact() {
+    let sandbox = Sandbox::new();
+    sandbox.store(keeper_with_overturn());
+    let stdout = status(&sandbox.show(&[]), 0);
+    let marked = format!("Ada Marsh -> Pip: owns, her gull [overturned in ch 3: {OVERTURN_NOTE}]");
+    assert_eq!(
+        section(&stdout, "Relations"),
+        [marked.as_str(), "Ada Marsh - Tom Reed: acquaintance, met on the jetty"],
+        "{stdout}"
+    );
+}
+
+#[test]
+fn show_before_the_overturn_prints_the_fact_unmarked() {
+    let sandbox = Sandbox::new();
+    sandbox.store(keeper_with_overturn());
+    let stdout = status(&sandbox.show(&["--at", "2"]), 0);
+    assert_eq!(
+        section(&stdout, "Relations"),
+        ["Ada Marsh -> Pip: owns, her gull", "Ada Marsh - the stranger: acquaintance, met on the jetty"],
+        "{stdout}"
+    );
+}
+
+#[test]
+fn show_prints_a_marked_fact_beside_the_same_kind_stated_again() {
+    let sandbox = Sandbox::new();
+    // The keeper's book with chapter 1's fact, that the keeper owns Pip, overturned in chapter 2 and stated again,
+    // with its own quote, in chapter 3.
+    let mut log = common::keeper();
+    let overturn = EventBody::Overturned {
+        from: "ada".into(),
+        to: "pip".into(),
+        kind: RelationKind::Owns,
+        note: OVERTURN_NOTE.into(),
+    };
+    let at = |document, block| Position { document, block };
+    let overturned = Event { seq: 0, chapter: 2, at: at(2, 7), quote: OVERTURN_QUOTE.into(), body: overturn };
+    let owns = EventBody::Relation {
+        from: "ada".into(),
+        to: "pip".into(),
+        kind: RelationKind::Owns,
+        note: "given to her for good".into(),
+    };
+    let quote = "The harbourmaster gave the gull to her for good.";
+    let again = Event { seq: 0, chapter: 3, at: at(3, 9), quote: quote.into(), body: owns };
+    // The overturn goes after chapter 2's last event and the statement after chapter 3's, and the events are
+    // numbered again in that order.
+    log.events.insert(6, overturned);
+    log.events.push(again);
+    for (event, seq) in log.events.iter_mut().zip(1..) {
+        event.seq = seq;
+    }
+    sandbox.store(log);
+
+    let stdout = status(&sandbox.show(&[]), 0);
+    let marked = format!("Ada Marsh -> Pip: owns, her gull [overturned in ch 2: {OVERTURN_NOTE}]");
+    assert_eq!(
+        section(&stdout, "Relations"),
+        [
+            marked.as_str(),
+            "Ada Marsh -> Pip: owns, given to her for good",
+            "Ada Marsh - Tom Reed: acquaintance, met on the jetty"
+        ],
+        "{stdout}"
+    );
+}
+
+#[test]
 fn failed_extract_leaves_database_unchanged() {
     let sandbox = Sandbox::new();
-    status(&sandbox.extract("1-3", &sandbox.replies("replies", 3), &[]), 0);
+    status(&sandbox.extract("1-3", &sandbox.replies("replies", 6), &[]), 0);
     let before = status(&sandbox.show(&[]), 0);
     assert!(before.contains("Tom Reed"), "{before}");
 
-    let output = sandbox.extract("1-3", &sandbox.replies("one", 1), &["--no-cache", "--replace"]);
+    let output = sandbox.extract("1-3", &sandbox.replies("one", 2), &["--no-cache", "--replace"]);
     status(&output, 1);
     assert_eq!(status(&sandbox.show(&[]), 0), before);
 }
@@ -657,7 +757,7 @@ fn show_missing_book_is_named() {
 fn show_past_the_last_chapter_fails() {
     let sandbox = Sandbox::new();
     // Entries 2 and 3 of the contents are the log's chapters 1 and 2.
-    status(&sandbox.extract("2-3", &sandbox.replies("replies", 3), &[]), 0);
+    status(&sandbox.extract("2-3", &sandbox.replies("replies", 6), &[]), 0);
     status(&sandbox.show(&["--at", "2"]), 0);
     let output = sandbox.show(&["--at", "3"]);
     assert!(status(&output, 1).is_empty());
@@ -680,7 +780,7 @@ fn at_help_says_where_chapters_count_from() {
 #[test]
 fn show_html_writes_a_self_contained_page() {
     let sandbox = Sandbox::new();
-    status(&sandbox.extract("1-3", &sandbox.replies("replies", 3), &[]), 0);
+    status(&sandbox.extract("1-3", &sandbox.replies("replies", 6), &[]), 0);
     let file = sandbox.path("keeper.html");
     let stdout = status(&sandbox.show(&["--html", file.to_str().unwrap()]), 0);
     assert!(stdout.is_empty(), "the page goes to the file: {stdout}");
@@ -700,27 +800,16 @@ fn show_html_writes_a_self_contained_page() {
 #[test]
 fn html_data_cannot_close_its_script() {
     let sandbox = Sandbox::new();
-    // show finds a book by the hash of its file and reads nothing else of it, so any file can stand for the
-    // book of a log written straight into the database.
-    let book = sandbox.path("small.epub");
-    fs::write(&book, "A small file that stands for a book.").unwrap();
     let mut log = common::keeper();
-    log.book.sha256 = sha256_file(&book).unwrap();
     // The cast carries quotes on relation facts only. `<!--<script>` would make a browser pass over the
     // `</script>` that ends the data.
     let quote = "The keeper fed Pip, her gull.</script><p> <!--<script>";
     let event = log.events.iter_mut().find(|event| matches!(event.body, EventBody::Relation { .. })).unwrap();
     event.quote = quote.to_owned();
-    fs::create_dir_all(sandbox.path("data/haiyaku")).unwrap();
-    let mut conn = Connection::open(sandbox.path("data/haiyaku/haiyaku.db")).unwrap();
-    conn.pragma_update(None, "foreign_keys", "ON").unwrap();
-    haiyaku::store::migrate(&conn).unwrap();
-    write_book(&mut conn, &log).unwrap();
-    drop(conn);
+    sandbox.store(log);
 
     let file = sandbox.path("page.html");
-    let args: [&OsStr; 4] = ["show".as_ref(), book.as_os_str(), "--html".as_ref(), file.as_os_str()];
-    status(&sandbox.run(&args), 0);
+    status(&sandbox.show(&["--html", file.to_str().unwrap()]), 0);
     let page = fs::read_to_string(&file).unwrap();
     let raw = data_text(&page);
     assert!(!raw.contains("</") && !raw.contains("<!--"), "{raw}");
@@ -737,9 +826,28 @@ fn html_data_cannot_close_its_script() {
 }
 
 #[test]
+fn show_html_carries_the_overturn() {
+    let sandbox = Sandbox::new();
+    sandbox.store(keeper_with_overturn());
+    let file = sandbox.path("page.html");
+    status(&sandbox.show(&["--html", file.to_str().unwrap()]), 0);
+    let data = page_data(&fs::read_to_string(&file).unwrap());
+    // Owning is the one fact of the keeper and Pip.
+    let owns = |step: usize| {
+        let relations = data["steps"][step]["relations"].as_array().unwrap();
+        let pair = relations.iter().find(|relation| relation["a"] == "ada" && relation["b"] == "pip").unwrap();
+        assert_eq!(pair["facts"].as_array().unwrap().len(), 1, "{data}");
+        pair["facts"][0].clone()
+    };
+    assert_eq!(owns(2).get("overturned"), Some(&Value::Null), "not yet overturned after chapter 2: {data}");
+    let overturn = json!({ "chapter": 3, "note": OVERTURN_NOTE, "quote": OVERTURN_QUOTE });
+    assert_eq!(owns(3)["overturned"], overturn, "{data}");
+}
+
+#[test]
 fn html_page_starts_at_the_chapter_at_names() {
     let sandbox = Sandbox::new();
-    status(&sandbox.extract("1-3", &sandbox.replies("replies", 3), &[]), 0);
+    status(&sandbox.extract("1-3", &sandbox.replies("replies", 6), &[]), 0);
     let start = |name: &str, more: &[&str]| {
         let file = sandbox.path(name);
         status(&sandbox.show(&[&["--html", file.to_str().unwrap()][..], more].concat()), 0);

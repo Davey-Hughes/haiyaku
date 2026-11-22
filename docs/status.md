@@ -13,8 +13,8 @@ and the sidecars, built from
 `extract` feature, built from
 [plan 2](superpowers/plans/2026-11-21-haiyaku-extraction.md), are the EPUB
 reader (`book`), the model backends (`llm`: the Claude CLI, Ollama, an
-OpenAI-compatible server and recorded replies) and extraction itself: one
-checked model call a chapter, the program's own ids for the characters,
+OpenAI-compatible server and recorded replies) and extraction itself: two
+checked model calls a chapter, the program's own ids for the characters,
 and a reply cache that lets a run resume.
 
 The `haiyaku` binary (the `cli` feature, on by default) has two
@@ -28,6 +28,22 @@ The last of plan 2's three acceptance runs on Sorcerer's Stone in English
 and Korean, after two rounds of fixes, passes every check but one: the two
 reveals of chapter 17 came in one language per run, never both, because one model call a chapter decides whether a reveal
 is recorded (O11; the runs are in [notes.md](notes.md)).
+
+Plan 3's first part, built from
+[the reveals plan](superpowers/plans/2026-11-22-haiyaku-reveals.md) on
+[the reveals design](superpowers/specs/2026-11-22-haiyaku-reveals-design.md),
+answers that with a second call a chapter. After the first call's reply is
+checked, the second asks only what the chapter reveals about the
+characters and which recorded relations it shows were never true. Such a
+relation gets an `overturned` event, which schema version 2 stores, and
+the fold marks the fact it covers instead of dropping it: a reader before
+that chapter sees the fact as it was, a reader after it sees the mark.
+`show` prints the mark after the fact, and its page draws a pair whose
+facts are all overturned faint, as two rails with a label. The same part
+refuses a same-as between related characters (O12) and shows a fuller
+name given as an alias (O13). Its acceptance run on Sorcerer's Stone in
+English and Korean passes every check, at about 1.7 times plan 2's cost a
+book; it leaves O16 and O17 open (the run is in [notes.md](notes.md)).
 
 ## Decided
 
@@ -68,9 +84,9 @@ is recorded (O11; the runs are in [notes.md](notes.md)).
 
 ## Next
 
-1. Plan 3, series linking: the link step, `series`, `link`, `export` and
-   `show` for a series, with the English and Korean acceptance runs.
-   O11 decides first how a reveal is recorded reliably.
+1. Plan 3's linking, in a pull request of its own: the link step,
+   `series`, `link`, `export` and `show` for a series, with the English
+   and Korean acceptance runs.
 
 ## Open
 
@@ -88,8 +104,9 @@ is recorded (O11; the runs are in [notes.md](notes.md)).
 - O5: cargo-deny is not installed on the desktop, so `scripts/check-all.sh`
   stops at its last step there and `deny.toml` is first checked by CI's
   advisories job.
-- O6: Importing rows from a sidecar at an older schema version cannot be
-  tested until a version 2 migration exists; that migration adds the test.
+- O6: Closed: migration 002 is the version 2 migration, and
+  `import_migrates_a_version_one_sidecar` imports a version 1 sidecar
+  through it.
 - O7: How far "the consumer decides how the data is drawn" goes: data only,
   as plan 2 builds it, or also style hooks on a view the library ships.
   Decide when the taiyaku integration is designed.
@@ -111,19 +128,15 @@ is recorded (O11; the runs are in [notes.md](notes.md)).
   alias moves to a newer model, replies cached from the old one are reused
   until a run with `--no-cache` or a new cache. The fix is to key the cache
   by the model the reply reports.
-- O11: One model call a chapter decides whether a reveal is recorded. In
-  plan 2's three acceptance runs, the reveals of chapter 17 came in one
-  language per run and never in both. Two samples a chapter merged, or a
-  second pass over a chapter's relations, would steady it at about twice
-  the cost. Decide before plan 3's acceptance runs.
-- O12: A same-as can merge a character into one who speaks through it: one
-  English run merged Quirrell into Voldemort in chapter 17, and Quirrell's
-  relations read as Voldemort's from then on. The check accepts any same-as
-  whose quote is in the chapter; a prompt rule or a guard is needed.
-- O13: An alias that outranks a character's shown name does not replace it;
-  only a `named` event does, and the model often puts the fuller name among
-  the aliases (Mrs. Weasley stays under a description). The check could turn
-  such an alias into a `named` event.
+- O11: Closed: a second call a chapter asks only what the chapter reveals
+  or overturns (the reveals design, "The second call"). The measured trial
+  is in [notes.md](notes.md) ("A second call per chapter, 2026-11-22").
+- O12: Closed: the check refuses a same-as between two characters that the
+  log or the same reply relates to each other (the reveals design, "A guard
+  on same-as (O12)").
+- O13: Closed: where the check would write an alias that outranks the
+  shown name, at an introduction too, it writes a `named` event (the
+  reveals design, "A fuller name given as an alias (O13)").
 - O14: The `--html` page's labels collide in the dense centre of a cast of
   about 80 characters.
 - O15: A surname of one letter or syllable (김, 이) never lists its character
@@ -131,3 +144,17 @@ is recorded (O11; the runs are in [notes.md](notes.md)).
   words. Such a character is listed only by a whole name in the chapter or
   by a recent sighting, so after a gap it can come back as a second
   character.
+- O16: The second call can overturn a relation that still half holds. An
+  overturn covers every earlier statement of its kind between the two, so
+  in the Korean acceptance run Ron's enmity with Snape, recorded when Snape
+  docks his points, was marked at chapter 17 together with the belief that
+  Snape cursed Harry's broom. The same run overturned a doubtful rivalry
+  between Snape and Quirrell. The mark keeps both in view; a stricter
+  prompt rule, or an overturn of one statement instead of a kind, would
+  narrow it.
+- O17: A character first met only under a description or a form of
+  address comes back as a second character when a later chapter names it
+  and the roster no longer lists the first. In Korean the mother of
+  chapter 6 returns in chapter 17 under her married name, and the parents
+  Harry sees in the mirror in chapter 12, called by what he would call
+  them, duplicate Lily and James. Plan 2's runs showed the same.

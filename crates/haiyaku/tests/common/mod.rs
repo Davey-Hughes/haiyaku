@@ -15,7 +15,7 @@ use haiyaku::log::{
     BookLog, BookRecord, Chapter, Document, Entity, EntityKind, Event, EventBody, Name, Position, RelationKind, Sex,
 };
 use haiyaku::store::{Link, LinkMethod, Order, Series};
-use rusqlite::Connection;
+use rusqlite::{Connection, params};
 
 /// An in-memory database with foreign keys on and the haiyaku tables in it.
 pub fn db() -> Connection {
@@ -161,6 +161,97 @@ pub fn keeper() -> BookLog {
                 },
             ),
         ],
+    }
+}
+
+/// [`keeper`] with an eleventh event, in chapter 3, of the one type its story has no use for: a log with an event
+/// of every type that version 1 of the schema stores.
+pub fn keeper_with_appearance() -> BookLog {
+    let mut log = keeper();
+    log.events.push(event(11, 3, 9, "Pip slept through the storm.", EventBody::Appeared { entity: "pip".into() }));
+    log
+}
+
+/// The tables of version 1 of the schema, as a database made before version 2 has them.
+const VERSION_ONE: &str = include_str!("../../src/store/schema/001_initial.sql");
+
+/// Makes `conn`'s main database one that a haiyaku at schema version 1 made and stored `log` in. The rows go
+/// in by hand: `write_book` reads the stored log back first, through tables such a database does not have.
+///
+/// # Panics
+///
+/// When `log` holds an overturned event, which version 1 cannot store.
+pub fn version_one(conn: &Connection, log: &BookLog) {
+    conn.execute_batch(VERSION_ONE).unwrap();
+    // The version row as `migrate` writes it.
+    conn.execute_batch(
+        "CREATE TABLE main.haiyaku_schema (version INTEGER NOT NULL); INSERT INTO main.haiyaku_schema (version) VALUES (1)",
+    )
+    .unwrap();
+    let (book, sha256) = (&log.book, log.book.sha256.as_str());
+    conn.execute(
+        "INSERT INTO haiyaku_book VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![sha256, book.title, book.language, book.backend, book.model, book.prompt_version, book.extracted_at],
+    )
+    .unwrap();
+    for c in &log.chapters {
+        conn.execute(
+            "INSERT INTO haiyaku_chapter VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![sha256, c.number, c.toc_entry, c.title, c.seconds, c.cost_usd, c.kept, c.rejected],
+        )
+        .unwrap();
+    }
+    for d in &log.documents {
+        conn.execute(
+            "INSERT INTO haiyaku_document VALUES (?1, ?2, ?3, ?4)",
+            params![sha256, d.ordinal, d.path, d.chapter],
+        )
+        .unwrap();
+    }
+    for e in &log.entities {
+        let kind = match e.kind {
+            EntityKind::Character => "character",
+        };
+        conn.execute("INSERT INTO haiyaku_entity VALUES (?1, ?2, ?3)", params![sha256, e.id, kind]).unwrap();
+    }
+    for e in &log.events {
+        let event_type = match &e.body {
+            EventBody::Introduced { .. } => "introduced",
+            EventBody::Named { .. } => "named",
+            EventBody::Alias { .. } => "alias",
+            EventBody::Appeared { .. } => "appeared",
+            EventBody::Relation { .. } => "relation",
+            EventBody::SameAs { .. } => "same_as",
+            EventBody::Overturned { .. } => panic!("event {} is overturned, which version 1 cannot store", e.seq),
+        };
+        conn.execute(
+            "INSERT INTO haiyaku_event VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![sha256, e.seq, e.chapter, e.at.document, e.at.block, event_type, e.quote],
+        )
+        .unwrap();
+        match &e.body {
+            EventBody::Introduced { entity, name }
+            | EventBody::Named { entity, name }
+            | EventBody::Alias { entity, name } => {
+                let sex = name.title_sex.map(|sex| match sex {
+                    Sex::Male => "male",
+                    Sex::Female => "female",
+                });
+                let values = params![sha256, e.seq, entity, name.text, name.given, name.surname, name.title, sex];
+                conn.execute("INSERT INTO haiyaku_name VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)", values)
+            }
+            EventBody::Appeared { entity } => {
+                conn.execute("INSERT INTO haiyaku_appearance VALUES (?1, ?2, ?3)", params![sha256, e.seq, entity])
+            }
+            EventBody::Relation { from, to, kind, note } => conn.execute(
+                "INSERT INTO haiyaku_relation VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![sha256, e.seq, from, to, kind.as_str(), note],
+            ),
+            EventBody::SameAs { entity, other } => conn
+                .execute("INSERT INTO haiyaku_same_as VALUES (?1, ?2, ?3, ?4)", params![sha256, e.seq, entity, other]),
+            EventBody::Overturned { .. } => unreachable!("refused above"),
+        }
+        .unwrap();
     }
 }
 

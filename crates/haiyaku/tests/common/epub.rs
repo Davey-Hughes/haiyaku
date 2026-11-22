@@ -97,12 +97,14 @@ pub fn keeper_documents() -> Vec<(&'static str, Vec<u8>)> {
     ]
 }
 
-/// Replies a model could have written to the prompts for chapters 1 to 3 of [`keeper_epub`], each quoting its
-/// chapter: chapter 1 introduces the keeper and Pip, whom she owns; chapter 2 names the keeper Ada Marsh and
-/// introduces the stranger she meets on the jetty; chapter 3 introduces Tom Reed, calls Ada "Mrs. Marsh", and
-/// reveals that the stranger is Tom Reed.
+/// Replies a model could have written to the two calls a run makes for each of chapters 1 to 3 of
+/// [`keeper_epub`], in the order it makes them, so that a replay of them serves a whole run: each chapter's
+/// reply to its first call, then its reply to its second, which reveals and overturns nothing. The first replies
+/// each quote their chapter: chapter 1 introduces the keeper and Pip, whom she owns; chapter 2 names the keeper
+/// Ada Marsh and introduces the stranger she meets on the jetty; chapter 3 introduces Tom Reed, calls Ada "Mrs.
+/// Marsh", and reveals that the stranger is Tom Reed.
 pub fn keeper_replies() -> Vec<String> {
-    let replies = [
+    let firsts = [
         json!({
             "characters": [
                 {
@@ -174,7 +176,8 @@ pub fn keeper_replies() -> Vec<String> {
             }],
         }),
     ];
-    replies.iter().map(Value::to_string).collect()
+    let reveals = r#"{"relations":[],"overturned":[]}"#;
+    firsts.iter().flat_map(|first| [first.to_string(), reveals.to_owned()]).collect()
 }
 
 /// A name as a reply writes it: its text, the given name, surname and title it labels, and the sex the title

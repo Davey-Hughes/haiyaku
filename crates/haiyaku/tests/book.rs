@@ -5,7 +5,7 @@ mod common;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use common::{db, keeper, keepers_links, keepers_return};
+use common::{db, keeper, keeper_with_appearance, keepers_links, keepers_return};
 use haiyaku::Error;
 use haiyaku::log::{BookLog, Event, EventBody, Name, Position, RelationKind};
 use haiyaku::store::{Order, Series, migrate, put_links, put_series, read_book, read_events, write_book};
@@ -47,9 +47,22 @@ fn keeper_with_ghost() -> BookLog {
     )
 }
 
-/// `keeper()` with the one event type its story has no use for.
-fn keeper_with_appearance() -> BookLog {
-    keeper_and("Pip slept through the storm.", EventBody::Appeared { entity: "pip".into() })
+/// `keeper_with_appearance()` with a twelfth event, in chapter 3: Pip was never Ada's gull, as event 3 had it.
+fn keeper_with_overturn() -> BookLog {
+    let mut log = keeper_with_appearance();
+    log.events.push(Event {
+        seq: 12,
+        chapter: 3,
+        at: Position { document: 3, block: 10 },
+        quote: "Pip had never been her gull; he came to any keeper with bread.".into(),
+        body: EventBody::Overturned {
+            from: "ada".into(),
+            to: "pip".into(),
+            kind: RelationKind::Owns,
+            note: "he comes to anyone with bread".into(),
+        },
+    });
+    log
 }
 
 /// `write_book` refuses `log` as invalid, for a reason that says `why`, and stores none of it.
@@ -102,6 +115,14 @@ fn round_trip_in_a_utf16_database() {
 fn appeared_round_trips() {
     let mut conn = db();
     let log = keeper_with_appearance();
+    write_book(&mut conn, &log).unwrap();
+    assert_eq!(read_book(&conn, &log.book.sha256).unwrap(), log);
+}
+
+#[test]
+fn overturned_round_trips() {
+    let mut conn = db();
+    let log = keeper_with_overturn();
     write_book(&mut conn, &log).unwrap();
     assert_eq!(read_book(&conn, &log.book.sha256).unwrap(), log);
 }
@@ -349,10 +370,14 @@ fn event_in_a_document_without_a_chapter_is_invalid() {
 
 #[test]
 fn event_without_its_child_row_is_invalid() {
-    let log = keeper_with_appearance();
-    for (table, seq) in
-        [("haiyaku_name", 1), ("haiyaku_relation", 3), ("haiyaku_same_as", 8), ("haiyaku_appearance", 11)]
-    {
+    let log = keeper_with_overturn();
+    for (table, seq) in [
+        ("haiyaku_name", 1),
+        ("haiyaku_relation", 3),
+        ("haiyaku_same_as", 8),
+        ("haiyaku_appearance", 11),
+        ("haiyaku_overturn", 12),
+    ] {
         let mut conn = db();
         write_book(&mut conn, &log).unwrap();
         conn.execute(&format!("DELETE FROM {table} WHERE seq = ?1"), [seq]).unwrap();
@@ -372,7 +397,7 @@ fn name_rank() {
 
 #[test]
 fn relation_kinds_are_the_schemas() {
-    // The names in the CHECK of haiyaku_relation, in its order.
+    // The names in the CHECKs of haiyaku_relation and haiyaku_overturn, in their order.
     let kinds = [
         (RelationKind::Family, "family"),
         (RelationKind::Romance, "romance"),
@@ -386,25 +411,29 @@ fn relation_kinds_are_the_schemas() {
         (RelationKind::Acquaintance, "acquaintance"),
         (RelationKind::Owns, "owns"),
     ];
-    // Ada and Pip introduced, then one relation between them of every kind.
+    // Ada and Pip introduced, then one relation between them of every kind, each overturned after it.
     let mut log = keeper();
     log.events.truncate(2);
-    for (seq, (kind, name)) in (3..).zip(kinds) {
+    let event = |seq, body| Event {
+        seq,
+        chapter: 1,
+        at: Position { document: 1, block: seq },
+        quote: "The keeper and Pip shared the rail.".into(),
+        body,
+    };
+    for (seq, (kind, name)) in (3..).step_by(2).zip(kinds) {
         assert_eq!(kind.as_str(), name);
         assert_eq!(RelationKind::parse(name), Some(kind));
-        log.events.push(Event {
-            seq,
-            chapter: 1,
-            at: Position { document: 1, block: seq },
-            quote: "The keeper and Pip shared the rail.".into(),
-            body: EventBody::Relation { from: "ada".into(), to: "pip".into(), kind, note: name.into() },
-        });
+        let (from, to, note) = ("ada".to_owned(), "pip".to_owned(), name.to_owned());
+        log.events
+            .push(event(seq, EventBody::Relation { from: from.clone(), to: to.clone(), kind, note: note.clone() }));
+        log.events.push(event(seq + 1, EventBody::Overturned { from, to, kind, note }));
     }
     assert_eq!(RelationKind::parse("nemesis"), None);
     let directed: Vec<_> = kinds.iter().filter(|(kind, _)| kind.directed()).map(|(_, name)| *name).collect();
     assert_eq!(directed, ["mentor", "serves", "owns"]);
 
-    // The table's CHECK takes each name, and each reads back as the kind it was written from.
+    // The tables' CHECKs take each name, and each reads back as the kind it was written from.
     let mut conn = db();
     write_book(&mut conn, &log).unwrap();
     assert_eq!(read_book(&conn, &log.book.sha256).unwrap(), log);

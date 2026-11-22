@@ -1,11 +1,14 @@
 //! The schema and its migration runner through the public API, on in-memory databases.
 
+mod common;
+
+use common::{keeper_with_appearance, version_one};
 use haiyaku::Error;
-use haiyaku::store::{SCHEMA_VERSION, migrate, schema_version};
+use haiyaku::store::{SCHEMA_VERSION, migrate, read_book, schema_version};
 use rusqlite::Connection;
 
 /// In name order, as `tables` returns them.
-const TABLES: [&str; 14] = [
+const TABLES: [&str; 15] = [
     "haiyaku_appearance",
     "haiyaku_book",
     "haiyaku_chapter",
@@ -16,6 +19,7 @@ const TABLES: [&str; 14] = [
     "haiyaku_name",
     "haiyaku_order",
     "haiyaku_order_book",
+    "haiyaku_overturn",
     "haiyaku_relation",
     "haiyaku_same_as",
     "haiyaku_schema",
@@ -33,6 +37,16 @@ fn tables(conn: &Connection) -> Vec<String> {
 
 fn count(conn: &Connection, table: &str) -> u32 {
     conn.query_row(&format!("SELECT count(*) FROM {table}"), [], |row| row.get(0)).unwrap()
+}
+
+/// The table of each row whose foreign key finds no parent.
+fn dangling(conn: &Connection) -> Vec<String> {
+    let mut stmt = conn.prepare("PRAGMA main.foreign_key_check").unwrap();
+    stmt.query_map([], |row| row.get(0)).unwrap().map(Result::unwrap).collect()
+}
+
+fn foreign_keys(conn: &Connection) -> bool {
+    conn.pragma_query_value(None, "foreign_keys", |row| row.get(0)).unwrap()
 }
 
 /// A migrated database with foreign keys on and at least one row in every table: two invented books that
@@ -60,11 +74,13 @@ fn filled() -> Connection {
             ('{KEEPER}', 1, 1, 1, 0, 'introduced', 'Ada lit the lamp.'),
             ('{KEEPER}', 2, 1, 1, 0, 'appeared', 'Ada lit the lamp.'),
             ('{KEEPER}', 3, 1, 1, 2, 'relation', 'Tom had rowed with her since spring.'),
-            ('{KEEPER}', 4, 1, 1, 5, 'same_as', 'The rower was Tom.');
+            ('{KEEPER}', 4, 1, 1, 5, 'same_as', 'The rower was Tom.'),
+            ('{KEEPER}', 5, 1, 1, 6, 'overturned', 'Tom had never once rowed with her.');
          INSERT INTO haiyaku_name VALUES ('{KEEPER}', 1, 'ada', 'Miss Ada', 'Ada', NULL, 'Miss', 'female');
          INSERT INTO haiyaku_appearance VALUES ('{KEEPER}', 2, 'ada');
          INSERT INTO haiyaku_relation VALUES ('{KEEPER}', 3, 'ada', 'tom', 'friend', 'they row together');
          INSERT INTO haiyaku_same_as VALUES ('{KEEPER}', 4, 'ada', 'tom');
+         INSERT INTO haiyaku_overturn VALUES ('{KEEPER}', 5, 'ada', 'tom', 'friend', 'they never rowed together');
          INSERT INTO haiyaku_series VALUES ('keepers', 'The Keepers');
          INSERT INTO haiyaku_order VALUES ('keepers', 'published', 0);
          INSERT INTO haiyaku_order_book VALUES
@@ -82,8 +98,8 @@ fn migrate_creates_every_table() {
     let conn = Connection::open_in_memory().unwrap();
     migrate(&conn).unwrap();
     assert_eq!(tables(&conn), TABLES);
-    assert_eq!(schema_version(&conn).unwrap(), Some(1));
-    assert_eq!(SCHEMA_VERSION, 1);
+    assert_eq!(schema_version(&conn).unwrap(), Some(2));
+    assert_eq!(SCHEMA_VERSION, 2);
 }
 
 #[test]
@@ -92,7 +108,7 @@ fn migrate_twice_is_a_no_op() {
     migrate(&conn).unwrap();
     migrate(&conn).unwrap();
     assert_eq!(tables(&conn), TABLES);
-    assert_eq!(schema_version(&conn).unwrap(), Some(1));
+    assert_eq!(schema_version(&conn).unwrap(), Some(2));
     assert_eq!(count(&conn, "haiyaku_schema"), 1);
 }
 
@@ -112,8 +128,7 @@ fn migrate_leaves_foreign_keys_as_set() {
         conn.pragma_update(None, "foreign_keys", on).unwrap();
         migrate(&conn).unwrap();
         assert_eq!(tables(&conn), TABLES);
-        let after: bool = conn.pragma_query_value(None, "foreign_keys", |row| row.get(0)).unwrap();
-        assert_eq!(after, on);
+        assert_eq!(foreign_keys(&conn), on);
     }
 }
 
@@ -121,9 +136,9 @@ fn migrate_leaves_foreign_keys_as_set() {
 fn newer_schema_is_refused() {
     let conn = Connection::open_in_memory().unwrap();
     migrate(&conn).unwrap();
-    conn.execute("UPDATE haiyaku_schema SET version = 2", []).unwrap();
-    assert!(matches!(migrate(&conn), Err(Error::SchemaTooNew { found: 2, supported: 1 })));
-    assert_eq!(schema_version(&conn).unwrap(), Some(2));
+    conn.execute("UPDATE haiyaku_schema SET version = 3", []).unwrap();
+    assert!(matches!(migrate(&conn), Err(Error::SchemaTooNew { found: 3, supported: 2 })));
+    assert_eq!(schema_version(&conn).unwrap(), Some(3));
 }
 
 #[test]
@@ -131,7 +146,7 @@ fn migrate_in_a_rolled_back_transaction_leaves_no_tables() {
     let conn = Connection::open_in_memory().unwrap();
     let tx = conn.unchecked_transaction().unwrap();
     migrate(&tx).unwrap();
-    assert_eq!(schema_version(&tx).unwrap(), Some(1));
+    assert_eq!(schema_version(&tx).unwrap(), Some(2));
     tx.rollback().unwrap();
     assert!(tables(&conn).is_empty());
     assert_eq!(schema_version(&conn).unwrap(), None);
@@ -144,7 +159,7 @@ fn migrate_in_a_committed_transaction_stays() {
     migrate(&tx).unwrap();
     tx.commit().unwrap();
     assert_eq!(tables(&conn), TABLES);
-    assert_eq!(schema_version(&conn).unwrap(), Some(1));
+    assert_eq!(schema_version(&conn).unwrap(), Some(2));
 }
 
 #[test]
@@ -160,7 +175,7 @@ fn up_to_date_database_takes_no_write_lock() {
     // Fail at once on the writer's lock rather than wait for it.
     other.busy_timeout(std::time::Duration::ZERO).unwrap();
     migrate(&other).unwrap();
-    assert_eq!(schema_version(&other).unwrap(), Some(1));
+    assert_eq!(schema_version(&other).unwrap(), Some(2));
 }
 
 #[test]
@@ -176,7 +191,7 @@ fn migrate_looks_only_at_the_main_database() {
     assert_eq!(schema_version(&conn).unwrap(), None);
     migrate(&conn).unwrap();
     assert_eq!(tables(&conn), TABLES);
-    assert_eq!(schema_version(&conn).unwrap(), Some(1));
+    assert_eq!(schema_version(&conn).unwrap(), Some(2));
     assert_eq!(count(&conn, "main.haiyaku_schema"), 1);
     assert_eq!(count(&conn, "side.haiyaku_schema"), 1);
 }
@@ -192,7 +207,7 @@ fn a_temporary_table_of_the_name_is_not_the_schema() {
     assert_eq!(schema_version(&conn).unwrap(), None);
     migrate(&conn).unwrap();
     assert_eq!(tables(&conn), TABLES);
-    assert_eq!(schema_version(&conn).unwrap(), Some(1));
+    assert_eq!(schema_version(&conn).unwrap(), Some(2));
     // The version went into the main database's table and left the temporary one alone.
     let temporary: u32 = conn.query_row("SELECT version FROM temp.haiyaku_schema", [], |row| row.get(0)).unwrap();
     assert_eq!(temporary, 9);
@@ -229,13 +244,13 @@ fn every_table_takes_a_row_with_foreign_keys_on() {
 fn relation_to_an_entity_never_introduced_is_refused() {
     let conn = filled();
     conn.execute(
-        "INSERT INTO haiyaku_event VALUES (?1, 5, 1, 1, 7, 'relation', 'She wrote to the harbour master.')",
+        "INSERT INTO haiyaku_event VALUES (?1, 6, 1, 1, 7, 'relation', 'She wrote to the harbour master.')",
         [KEEPER],
     )
     .unwrap();
     let dangling = conn
         .execute(
-            "INSERT INTO haiyaku_relation VALUES (?1, 5, 'ada', 'harbour-master', 'acquaintance', 'she writes to him')",
+            "INSERT INTO haiyaku_relation VALUES (?1, 6, 'ada', 'harbour-master', 'acquaintance', 'she writes to him')",
             [KEEPER],
         )
         .unwrap_err();
@@ -300,7 +315,7 @@ fn book_hash_is_checked(conn: &Connection, encoding: &str) {
 fn deleting_events_takes_their_child_rows() {
     let conn = filled();
     conn.execute("DELETE FROM haiyaku_event WHERE book = ?1", [KEEPER]).unwrap();
-    for table in ["haiyaku_name", "haiyaku_appearance", "haiyaku_relation", "haiyaku_same_as"] {
+    for table in ["haiyaku_name", "haiyaku_appearance", "haiyaku_relation", "haiyaku_same_as", "haiyaku_overturn"] {
         assert_eq!(count(&conn, table), 0, "{table}");
     }
 }
@@ -313,4 +328,81 @@ fn deleting_a_series_takes_its_orders_and_links() {
         assert_eq!(count(&conn, table), 0, "{table}");
     }
     assert_eq!(count(&conn, "haiyaku_book"), 2);
+}
+
+/// A database that version 1 of the schema made, holding a book with an event of every type that version
+/// stores, with foreign keys on or off as `on` says.
+fn version_one_db(on: bool) -> Connection {
+    let conn = Connection::open_in_memory().unwrap();
+    conn.pragma_update(None, "foreign_keys", on).unwrap();
+    version_one(&conn, &keeper_with_appearance());
+    conn
+}
+
+// Migration 002 makes the events table again. With foreign keys on, dropping it takes the rows of its child
+// tables by cascade, and the migration cannot turn them off: inside a transaction the pragma does nothing.
+#[test]
+fn version_one_migrates_keeping_every_row() {
+    let log = keeper_with_appearance();
+    for on in [true, false] {
+        let conn = version_one_db(on);
+        migrate(&conn).unwrap();
+        assert_eq!(schema_version(&conn).unwrap(), Some(2), "foreign keys on: {on}");
+        assert_eq!(tables(&conn), TABLES, "foreign keys on: {on}");
+        assert_eq!(read_book(&conn, &log.book.sha256).unwrap(), log, "foreign keys on: {on}");
+        assert_eq!(dangling(&conn), Vec::<String>::new(), "foreign keys on: {on}");
+        assert_eq!(foreign_keys(&conn), on);
+    }
+}
+
+#[test]
+fn version_one_migrates_inside_a_callers_transaction() {
+    let log = keeper_with_appearance();
+    for on in [true, false] {
+        let conn = version_one_db(on);
+        conn.execute_batch("BEGIN IMMEDIATE").unwrap();
+        migrate(&conn).unwrap();
+        conn.execute_batch("COMMIT").unwrap();
+        assert_eq!(schema_version(&conn).unwrap(), Some(2), "foreign keys on: {on}");
+        assert_eq!(tables(&conn), TABLES, "foreign keys on: {on}");
+        assert_eq!(read_book(&conn, &log.book.sha256).unwrap(), log, "foreign keys on: {on}");
+        assert_eq!(dangling(&conn), Vec::<String>::new(), "foreign keys on: {on}");
+    }
+}
+
+// A bare table name finds a temporary table of that name before the main database's, and migration 002
+// drops and fills the tables it makes again by name.
+#[test]
+fn version_one_migration_leaves_temporary_tables_of_its_names_alone() {
+    let log = keeper_with_appearance();
+    let conn = version_one_db(true);
+    let names = [
+        "haiyaku_event",
+        "haiyaku_name",
+        "haiyaku_appearance",
+        "haiyaku_relation",
+        "haiyaku_same_as",
+        "haiyaku_overturn",
+    ];
+    for name in names {
+        conn.execute_batch(&format!("CREATE TEMP TABLE {name} (note TEXT); INSERT INTO temp.{name} VALUES ('mine')"))
+            .unwrap();
+    }
+    migrate(&conn).unwrap();
+    assert_eq!(schema_version(&conn).unwrap(), Some(2));
+    assert_eq!(tables(&conn), TABLES);
+    for name in names {
+        let notes: Vec<String> = conn
+            .prepare(&format!("SELECT note FROM temp.{name}"))
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(notes, ["mine"], "{name}");
+        // Out of the way of the reads below, which name the tables bare.
+        conn.execute_batch(&format!("DROP TABLE temp.{name}")).unwrap();
+    }
+    assert_eq!(read_book(&conn, &log.book.sha256).unwrap(), log);
+    assert_eq!(dangling(&conn), Vec::<String>::new());
 }

@@ -56,6 +56,11 @@ aside { overflow: auto; padding: 4px 14px 20px; border-left: 1px solid var(--rul
 .g-guide { color: var(--guide); } .g-guide .edge { stroke-dasharray: 12 3 2 3 2 3; }
 /* Round dots, which no other pattern has. */
 .g-neutral { color: var(--neutral); } .g-neutral .edge { stroke-dasharray: 0 5; stroke-linecap: round; }
+/* A pair whose every fact was overturned keeps its kind's colour but is drawn faint, as two thin rails, which
+   no group's pattern is, and with a label. */
+.overturned .edge { stroke-dasharray: none; stroke-linecap: butt; stroke-width: 1; opacity: .5; }
+.overturned .edge.mine { stroke-width: 1.6; }
+.overturned .head { opacity: .5; }
 
 aside h2 { font-size: 16px; margin: 14px 0 2px; }
 aside h3 { font-size: 13px; margin: 16px 0 4px; color: var(--muted); }
@@ -267,20 +272,32 @@ function graph(step, names, id) {
   const showKinds = document.getElementById('kinds').checked;
   const lines = svg('g', {}, root), marks = svg('g', {}, root);
   for (const relation of step.relations) {
-    // Facts come in the order first stated: the line is drawn as the newest of them.
-    const fact = relation.facts[relation.facts.length - 1];
+    // Facts come in the order first stated: the line is drawn as the newest that stands, or, when a later
+    // chapter overturned every one, as the newest of them, marked.
+    const standing = relation.facts.filter((f) => !f.overturned);
+    const overturned = standing.length === 0;
+    const drawn = overturned ? relation.facts : standing;
+    const fact = drawn[drawn.length - 1];
     const [from, to] = fact.from === relation.b ? [relation.b, relation.a] : [relation.a, relation.b];
     const a = pos[from], b = pos[to];
     if (!a || !b) continue;
     const mine = id !== null && (relation.a === id || relation.b === id);
-    const group = svg('g', { class: 'g-' + (groupOf[fact.kind] || 'neutral') + (id !== null && !mine ? ' dim' : '') }, lines);
+    const dim = id !== null && !mine;
+    const group = svg('g', {
+      class: 'g-' + (groupOf[fact.kind] || 'neutral') + (overturned ? ' overturned' : '') + (dim ? ' dim' : ''),
+    }, lines);
     const dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy) || 1, ux = dx / d, uy = dy / d;
     // A directed fact's line stops at its arrowhead, and the arrowhead at the edge of the node.
     const tip = fact.from ? RADIUS + 2 : 0, head = fact.from ? 9 : 0;
-    svg('line', {
-      class: 'edge' + (mine ? ' mine' : ''),
-      x1: a.x, y1: a.y, x2: b.x - ux * (tip + head), y2: b.y - uy * (tip + head),
-    }, group);
+    // An overturned pair's two rails stand this far either side of where its line would be.
+    const gap = mine ? 2.2 : 1.6;
+    for (const side of overturned ? [-1, 1] : [0]) {
+      const ox = -uy * gap * side, oy = ux * gap * side;
+      svg('line', {
+        class: 'edge' + (mine ? ' mine' : ''),
+        x1: a.x + ox, y1: a.y + oy, x2: b.x - ux * (tip + head) + ox, y2: b.y - uy * (tip + head) + oy,
+      }, group);
+    }
     if (fact.from) {
       const tx = b.x - ux * tip, ty = b.y - uy * tip, bx = tx - ux * head, by = ty - uy * head;
       svg('path', {
@@ -289,10 +306,12 @@ function graph(step, names, id) {
       }, group);
     }
     svg('title', {}, group).textContent = relation.facts.map((f) => factLine(f, relation, names)).join('\n');
-    if (showKinds && !(id !== null && !mine)) {
-      svg('text', { class: 'kinds', x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }, group).textContent =
-        relation.facts.map((f) => f.kind).join(', ');
-    }
+    // The label says an overturned pair is one even with the kinds off or the line dimmed, so that the mark
+    // never rests on the faint line alone.
+    const label = showKinds && !dim
+      ? relation.facts.map((f) => f.kind + (f.overturned ? ' (overturned)' : '')).join(', ')
+      : overturned ? 'overturned' : null;
+    if (label) svg('text', { class: 'kinds', x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }, group).textContent = label;
   }
   for (const character of step.characters) {
     const p = pos[character.id];
@@ -315,14 +334,24 @@ function graph(step, names, id) {
   }
 }
 
-function factLine(fact, relation, names) {
+// A fact's line after its kind: its ends, its note and its chapters.
+function factRest(fact, relation, names) {
   // An end the names lack stands as its id, as show prints it, rather than as "undefined".
   const name = (id) => names[id] ?? id;
   const other = fact.from === relation.a ? relation.b : relation.a;
   const ends = fact.from
     ? name(fact.from) + ' → ' + name(other)
     : name(relation.a) + ' – ' + name(relation.b);
-  return fact.kind + ': ' + ends + (fact.note ? ', ' + fact.note : '') + ' (' + chapters(fact.first, fact.last) + ')';
+  return ': ' + ends + (fact.note ? ', ' + fact.note : '') + ' (' + chapters(fact.first, fact.last) + ')';
+}
+
+// The chapter and note of an overturn, in show's words.
+function overturnText(overturn) {
+  return 'overturned in ch ' + overturn.chapter + (overturn.note ? ': ' + overturn.note : '');
+}
+
+function factLine(fact, relation, names) {
+  return fact.kind + factRest(fact, relation, names) + (fact.overturned ? ', ' + overturnText(fact.overturned) : '');
 }
 
 function panel(step, names, id) {
@@ -365,17 +394,27 @@ function about(character, step, names) {
       return html('li', {},
         html('button', { type: 'button', class: 'pick', onclick: () => pick(other) }, names[other] ?? other),
         html('ul', { class: 'facts' }, relation.facts.map((fact) => html('li', {},
-          factLine(fact, relation, names),
-          html('blockquote', {}, fact.quote)))));
+          fact.overturned ? html('s', {}, fact.kind) : fact.kind,
+          factRest(fact, relation, names),
+          html('blockquote', {}, fact.quote),
+          // The strike-through is not read out, so the words say it too.
+          fact.overturned && [
+            html('p', { class: 'meta' }, overturnText(fact.overturned)),
+            html('blockquote', {}, fact.overturned.quote),
+          ]))));
     });
   parts.push(items.length ? html('ul', {}, items) : html('p', { class: 'meta' }, 'None yet.'));
   return parts;
 }
 
+// A line as the graph draws a group's, or, for 'overturned', an overturned pair's rails in no group's colour,
+// since such a pair keeps the colour of its kind.
 function sample(group) {
   const box = svg('svg', { width: 60, height: 12, viewBox: '0 0 60 12', 'aria-hidden': 'true' });
-  const g = svg('g', { class: 'g-' + group }, box);
-  svg('line', { class: 'edge', x1: 2, y1: 6, x2: group === 'guide' ? 50 : 58, y2: 6 }, g);
+  const g = svg('g', { class: group === 'overturned' ? 'overturned' : 'g-' + group }, box);
+  for (const y of group === 'overturned' ? [4.4, 7.6] : [6]) {
+    svg('line', { class: 'edge', x1: 2, y1: y, x2: group === 'guide' ? 50 : 58, y2: y }, g);
+  }
   if (group === 'guide') svg('path', { class: 'head', d: 'M59,6L50,1.5L50,10.5Z' }, g);
   return box;
 }
@@ -397,7 +436,10 @@ function legend() {
       html('li', {}, mark(true, false), 'filled: in this chapter'),
       html('li', {}, mark(false, false), 'hollow: not in this chapter'),
       html('li', {}, mark(false, true), 'ringed: selected, its lines drawn heavier'),
-      kinds));
+      kinds,
+      html('li', {}, sample('overturned'),
+        'overturned: a later chapter showed that none of the pair\'s facts was true; ' +
+        'the panel strikes through an overturned fact\'s kind')));
 }
 
 function pick(id) {

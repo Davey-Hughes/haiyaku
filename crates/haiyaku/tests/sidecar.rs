@@ -6,7 +6,7 @@ mod common;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use common::{db, keeper, keepers, keepers_links, keepers_return};
+use common::{db, keeper, keeper_with_appearance, keepers, keepers_links, keepers_return, version_one};
 use haiyaku::Error;
 use haiyaku::store::{
     SCHEMA_VERSION, export_book, import_book, put_links, put_series, read_book, read_links, schema_version,
@@ -180,8 +180,8 @@ fn import_leaves_sidecar_untouched() {
     assert_eq!(files(dir.path()), ["keeper.haiyaku.db"]);
 }
 
-// Version 1 is the first schema, so the only older file there can be is one from before any table. Migrated,
-// it holds no book, which is enough to show that the migration ran, and ran on a copy.
+// A file from before any table, at version 0. Migrated, it holds no book, which is enough to show that the
+// migration ran, and ran on a copy.
 #[test]
 fn import_migrates_an_older_sidecar_in_memory() {
     let dir = dir();
@@ -199,6 +199,26 @@ fn import_migrates_an_older_sidecar_in_memory() {
     assert!(fs::read(&sidecar).unwrap() == before, "the import changed the sidecar's bytes");
     assert_eq!(files(dir.path()), ["old.haiyaku.db"]);
     assert_no_book(&target);
+}
+
+// O6: a sidecar that a haiyaku at schema version 1 wrote, which a migration has to bring to version 2 without
+// writing to the file.
+#[test]
+fn import_migrates_a_version_one_sidecar() {
+    let dir = dir();
+    let sidecar = dir.path().join("keeper.haiyaku.db");
+    let log = keeper_with_appearance();
+    let file = Connection::open(&sidecar).unwrap();
+    file.pragma_update(None, "foreign_keys", "ON").unwrap();
+    version_one(&file, &log);
+    drop(file);
+    let before = fs::read(&sidecar).unwrap();
+
+    let mut target = db();
+    import_book(&mut target, &sidecar, &hash()).unwrap();
+    assert_eq!(read_book(&target, &hash()).unwrap(), log);
+    assert!(fs::read(&sidecar).unwrap() == before, "the import changed the sidecar's bytes");
+    assert_eq!(files(dir.path()), ["keeper.haiyaku.db"]);
 }
 
 #[test]

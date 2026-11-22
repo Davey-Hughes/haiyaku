@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 
 use common::epub::{chapter_text, name, relation, relevant_roster};
 use haiyaku::book::ChapterText;
-use haiyaku::extract::{Outcome, Rejected, Roster, check, schema};
+use haiyaku::extract::{Outcome, Rejected, Roster, check, check_reveals, reveal_schema, schema};
 use haiyaku::fold::{Cast, Folder};
 use haiyaku::log::{Entity, EntityKind, Event, EventBody, Name, Position, RelationKind, Sex};
 use serde_json::{Value, json};
@@ -117,7 +117,9 @@ fn fields(event: &Event) -> Vec<&str> {
             fields.extend([&name.given, &name.surname, &name.title].into_iter().flatten().map(String::as_str));
         }
         EventBody::Appeared { entity } => fields.push(entity),
-        EventBody::Relation { from, to, note, .. } => fields.extend([from, to, note].map(String::as_str)),
+        EventBody::Relation { from, to, note, .. } | EventBody::Overturned { from, to, note, .. } => {
+            fields.extend([from, to, note].map(String::as_str));
+        }
         EventBody::SameAs { entity, other } => fields.extend([entity, other].map(String::as_str)),
     }
     fields
@@ -360,13 +362,71 @@ fn name_outranking_the_shown_name_is_named() {
         &reply(&[character("stranger", description("the stranger"), &[mr_reed], "On the jetty stood the stranger")]),
     );
 
-    let second = chapter_text(2, 2, &["Tom took off his hat and shook the rain from it."]);
-    let tom = name("Tom", Some("Tom"), None, None, None);
-    let outcome = check(&mut roster, &second, &reply(&[character("c1", tom, &[], "Tom took off his hat")]));
+    // "Mr. Reed", given as an alias, outranks "the stranger" and is shown from chapter 1 on.
+    assert_eq!(cast(&roster).characters[0].name, "Mr. Reed");
 
-    // "Tom" ranks no higher than the alias "Mr. Reed", but higher than "the stranger", the name shown.
-    assert_eq!(bodies(&outcome.events), [appeared("c1"), named("c1", stored("Tom", Some("Tom"), None, None, None))]);
-    assert_eq!(cast(&roster).characters[0].name, "Tom");
+    let second = chapter_text(2, 2, &["Tom Reed took off his hat and shook the rain from it."]);
+    let outcome = check(&mut roster, &second, &reply(&[character("c1", tom_reed(), &[], "Tom Reed took off his hat")]));
+
+    // "Tom Reed" outranks "Mr. Reed", the name shown.
+    assert_eq!(
+        bodies(&outcome.events),
+        [appeared("c1"), named("c1", stored("Tom Reed", Some("Tom"), Some("Reed"), None, None))]
+    );
+    assert_eq!(cast(&roster).characters[0].name, "Tom Reed");
+}
+
+#[test]
+fn alias_outranking_the_shown_name_is_named() {
+    let mut roster = Roster::new();
+    let first = chapter_text(1, 1, &["At noon the tall woman rowed in from the point."]);
+    check(
+        &mut roster,
+        &first,
+        &reply(&[character("woman", description("the tall woman"), &[], "At noon the tall woman rowed in")]),
+    );
+
+    let second = chapter_text(
+        2,
+        2,
+        &[
+            "Down at the harbour the tall woman counted the nets.",
+            "Good day, Mrs. Marsh, called the ferryman.",
+            "The children called her Widow Marsh, or just the widow.",
+        ],
+    );
+    let evidence = "Down at the harbour the tall woman counted the nets";
+    let widow_marsh = name("Widow Marsh", None, Some("Marsh"), Some("Widow"), Some("female"));
+    let aliases = [mrs_marsh(), widow_marsh, description("the widow")];
+    let outcome =
+        check(&mut roster, &second, &reply(&[character("c1", description("the tall woman"), &aliases, evidence)]));
+
+    // "Mrs. Marsh" outranks "the tall woman", the name shown until then. "Widow Marsh" ranks no higher than "Mrs.
+    // Marsh", which is shown by the time it is weighed, and "the widow" ranks lower.
+    assert_eq!(
+        outcome.events,
+        [
+            event(2, 2, at(2, 0), evidence, appeared("c1")),
+            event(
+                3,
+                2,
+                at(2, 1),
+                "Mrs. Marsh",
+                named("c1", stored("Mrs. Marsh", None, Some("Marsh"), Some("Mrs."), Some(Sex::Female))),
+            ),
+            event(
+                4,
+                2,
+                at(2, 2),
+                "Widow Marsh",
+                alias("c1", stored("Widow Marsh", None, Some("Marsh"), Some("Widow"), Some(Sex::Female))),
+            ),
+            event(5, 2, at(2, 2), "the widow", alias("c1", stored("the widow", None, None, None, None))),
+        ]
+    );
+    let cast = cast(&roster);
+    assert_eq!(cast.characters[0].name, "Mrs. Marsh");
+    assert_eq!(cast.characters[0].aliases, ["the tall woman", "Widow Marsh", "the widow"]);
 }
 
 /// A roster that holds Ada Marsh as c1, with the alias Mrs. Marsh.
@@ -1191,6 +1251,139 @@ fn same_as_needs_two_characters_and_its_own_evidence() {
     assert_eq!(outcome.kept, 3);
 }
 
+/// The steward and the duke of [`steward_chapter`], called `steward` and `duke`.
+fn steward_characters() -> [Value; 2] {
+    [
+        character("steward", description("the steward"), &[], "At first light the steward bowed low"),
+        character("duke", description("the duke"), &[], "bowed low before the duke"),
+    ]
+}
+
+/// A chapter in which the steward serves the duke.
+fn steward_chapter() -> ChapterText {
+    chapter_text(
+        1,
+        1,
+        &["At first light the steward bowed low before the duke.", "The steward had served the duke all his life."],
+    )
+}
+
+#[test]
+fn same_as_between_characters_related_earlier_is_refused() {
+    let serves = relation("steward", "duke", "serves", "his steward", "The steward had served the duke all his life");
+    let first = reply_with(&steward_characters(), &[serves], &[]);
+    let second = chapter_text(2, 2, &["Under the mask the steward wore the face of the duke."]);
+    let evidence = "Under the mask the steward wore the face of the duke";
+    // The relation runs from c1 to c2, and a same-as either way round is refused.
+    for item in [same_as("c1", "c2", evidence), same_as("c2", "c1", evidence)] {
+        let mut roster = Roster::new();
+        check(&mut roster, &steward_chapter(), &first);
+        let outcome = check(&mut roster, &second, &reply_with(&[], &[], std::slice::from_ref(&item)));
+
+        assert_eq!(outcome.rejected, [rejected("related_pair", item)]);
+        assert!(outcome.events.is_empty());
+        assert_eq!(cast(&roster).characters.len(), 2);
+    }
+}
+
+#[test]
+fn same_as_between_characters_related_in_the_same_reply_is_refused() {
+    let item = same_as("dog", "keeper", "The keeper fed Pip, her gull");
+    let mut roster = Roster::new();
+    let outcome = check(
+        &mut roster,
+        &keeper_chapter(),
+        &reply_with(&keeper_characters(), &[keeper_owns_pip()], std::slice::from_ref(&item)),
+    );
+
+    assert_eq!(outcome.rejected, [rejected("related_pair", item)]);
+    assert_eq!(
+        bodies(&outcome.events),
+        [
+            introduced("c1", stored("the keeper", None, None, None, None)),
+            introduced("c2", stored("Pip", Some("Pip"), None, None, None)),
+            related("c1", "c2", RelationKind::Owns, "her gull"),
+        ]
+    );
+    assert_eq!(outcome.kept, 3);
+}
+
+#[test]
+fn same_as_is_refused_when_the_same_reply_relates_them_with_a_bad_quote() {
+    // Turned down for its quote, the relation still says the text tells of two people.
+    let item = relation("keeper", "dog", "owns", "her gull", "The keeper bought Pip at the harbour market");
+    let same = same_as("dog", "keeper", "The keeper fed Pip, her gull");
+    let mut roster = Roster::new();
+    let reply = reply_with(&keeper_characters(), std::slice::from_ref(&item), std::slice::from_ref(&same));
+    let outcome = check(&mut roster, &keeper_chapter(), &reply);
+
+    assert_eq!(outcome.rejected, [rejected("evidence_not_found", item), rejected("related_pair", same)]);
+    assert_eq!(
+        bodies(&outcome.events),
+        [
+            introduced("c1", stored("the keeper", None, None, None, None)),
+            introduced("c2", stored("Pip", Some("Pip"), None, None, None)),
+        ]
+    );
+    assert_eq!(outcome.kept, 2);
+}
+
+#[test]
+fn same_as_is_kept_when_the_only_relation_item_has_an_unknown_kind() {
+    // A kind outside the list states no relation the check knows, so the item does not say the two are two people.
+    let item = relation("keeper", "dog", "pet", "her gull", "The keeper fed Pip, her gull");
+    let mut roster = Roster::new();
+    let reply = reply_with(
+        &keeper_characters(),
+        std::slice::from_ref(&item),
+        &[same_as("dog", "keeper", "The keeper fed Pip, her gull")],
+    );
+    let outcome = check(&mut roster, &keeper_chapter(), &reply);
+
+    assert_eq!(outcome.rejected, [rejected("bad_kind", item)]);
+    assert_eq!(
+        bodies(&outcome.events),
+        [
+            introduced("c1", stored("the keeper", None, None, None, None)),
+            introduced("c2", stored("Pip", Some("Pip"), None, None, None)),
+            same("c2", "c1"),
+        ]
+    );
+    assert_eq!(outcome.kept, 3);
+}
+
+#[test]
+fn same_as_through_a_merged_id_is_refused() {
+    let chapter = chapter_text(
+        1,
+        1,
+        &[
+            "At first light the steward bowed low before the duke.",
+            "Orlan Vey had ruled the valley for thirty years.",
+            "The duke was Orlan Vey, and the steward had served him all his life.",
+        ],
+    );
+    let orlan = name("Orlan Vey", Some("Orlan"), Some("Vey"), None, None);
+    let [steward, duke] = steward_characters();
+    let characters = [steward, character("orlan", orlan, &[], "Orlan Vey had ruled the valley"), duke];
+    let evidence = "The duke was Orlan Vey";
+    let serves = |to: &str| relation("steward", to, "serves", "his steward", "the steward had served him all his life");
+    // The steward is c1, Orlan Vey c2 and the duke c3, merged into c2 by the first same-as. The relation is the
+    // steward's to c2, or to c3 and so to c2 once c3 is merged; either way a same-as of the steward and either id
+    // is one of c1 and c2.
+    for (relation, item) in [
+        (serves("orlan"), same_as("steward", "duke", evidence)),
+        (serves("duke"), same_as("steward", "orlan", evidence)),
+    ] {
+        let mut roster = Roster::new();
+        let items = [same_as("duke", "orlan", evidence), item.clone()];
+        let outcome = check(&mut roster, &chapter, &reply_with(&characters, &[relation], &items));
+
+        assert_eq!(outcome.rejected, [rejected("related_pair", item)]);
+        assert_eq!(outcome.events.last().map(|event| &event.body), Some(&same("c2", "c3")));
+    }
+}
+
 #[test]
 fn schema_lists_every_relation_kind() {
     let kinds = &schema()["properties"]["relations"]["items"]["properties"]["kind"]["enum"];
@@ -1225,4 +1418,316 @@ fn schema_requires_every_field_and_no_other() {
         assert_eq!(properties, required, "{object}");
         assert_eq!(object["additionalProperties"], false, "{object}");
     }
+}
+
+#[test]
+fn reveal_schema_requires_both_lists() {
+    /// The keys of `object`'s properties and its required keys, each sorted.
+    fn keys(object: &Value) -> (Vec<&str>, Vec<&str>) {
+        let mut properties: Vec<&str> = object["properties"].as_object().unwrap().keys().map(String::as_str).collect();
+        let mut required: Vec<&str> =
+            object["required"].as_array().unwrap().iter().map(|key| key.as_str().unwrap()).collect();
+        properties.sort_unstable();
+        required.sort_unstable();
+        (properties, required)
+    }
+    let reveal = reveal_schema();
+    let lists = vec!["overturned", "relations"];
+    assert_eq!(keys(&reveal), (lists.clone(), lists));
+    assert_eq!(reveal["additionalProperties"], false);
+    // A relation is the first call's relation item, and an overturned item is written as one.
+    let relation = &schema()["properties"]["relations"]["items"];
+    assert_eq!(reveal["properties"]["relations"], json!({ "type": "array", "items": relation }));
+    let item = &reveal["properties"]["overturned"]["items"];
+    let fields = vec!["evidence", "from", "kind", "note", "to"];
+    assert_eq!(keys(item), (fields.clone(), fields));
+    assert_eq!(item["additionalProperties"], false);
+    assert_eq!(item["properties"]["kind"]["enum"], json!(RelationKind::ALL.map(RelationKind::as_str)));
+    for field in ["from", "to", "note", "evidence"] {
+        assert_eq!(item["properties"][field], json!({ "type": "string" }), "{field}");
+    }
+}
+
+/// The warden and Corin of [`warden_chapter`], called `warden` and `corin`.
+fn warden_characters() -> [Value; 2] {
+    [
+        character("warden", description("the warden"), &[], "The warden barred the gate against Corin"),
+        character("corin", name("Corin", Some("Corin"), None, None, None), &[], "Corin swore that the warden"),
+    ]
+}
+
+/// A chapter in which Corin takes the warden for his enemy, and the warden teaches Corin.
+fn warden_chapter() -> ChapterText {
+    chapter_text(
+        1,
+        1,
+        &[
+            "The warden barred the gate against Corin at dusk.",
+            "Corin swore that the warden was his enemy for life.",
+            "Every morning the warden taught Corin the sword in the yard.",
+        ],
+    )
+}
+
+/// The enemy relation of [`warden_chapter`], from the warden to Corin.
+fn warden_enemy() -> Value {
+    relation("warden", "corin", "enemy", "sworn enemy", "Corin swore that the warden was his enemy for life")
+}
+
+/// The roster after [`warden_chapter`], whose reply makes the warden c1 and Corin c2 and states `relations`,
+/// every item kept.
+fn warden_roster(relations: &[Value]) -> Roster {
+    let mut roster = Roster::new();
+    let outcome = check(&mut roster, &warden_chapter(), &reply_with(&warden_characters(), relations, &[]));
+    assert!(outcome.rejected.is_empty(), "{:?}", outcome.rejected);
+    roster
+}
+
+/// The chapter after [`warden_chapter`]: the warden was never Corin's enemy, and never his teacher.
+fn unbarred_chapter() -> ChapterText {
+    chapter_text(
+        2,
+        2,
+        &[
+            "That night the warden left the gate unbarred for Corin.",
+            "He had barred it only to keep the guard from finding Corin.",
+            "The lessons in the yard had only ever been a cover for their talks.",
+            "The warden had stood with Corin against the guard from the start.",
+        ],
+    )
+}
+
+/// The quote of [`unbarred_chapter`] that shows the warden was never Corin's enemy.
+const NEVER_ENEMIES: &str = "He had barred it only to keep the guard from finding Corin";
+
+/// The quote of [`unbarred_chapter`] that shows the warden never taught Corin.
+const NO_LESSONS: &str = "The lessons in the yard had only ever been a cover";
+
+/// The quote of [`unbarred_chapter`] that shows the warden is Corin's ally.
+const ALLIES: &str = "The warden had stood with Corin against the guard";
+
+/// A reply to the second call: these relations and overturned items.
+fn reveals(relations: &[Value], overturned: &[Value]) -> Value {
+    json!({ "relations": relations, "overturned": overturned })
+}
+
+/// An overturned item of a reply to the second call, which is written as a relation item is.
+fn overturned(from: &str, to: &str, kind: &str, note: &str, evidence: &str) -> Value {
+    relation(from, to, kind, note, evidence)
+}
+
+fn overturn(from: &str, to: &str, kind: RelationKind, note: &str) -> EventBody {
+    EventBody::Overturned { from: from.into(), to: to.into(), kind, note: note.into() }
+}
+
+#[test]
+fn overturn_of_a_held_relation_is_kept() {
+    let mut roster = warden_roster(&[warden_enemy()]);
+    // Written from Corin to the warden: an enemy runs no way round, so this is the relation stated from the warden
+    // to Corin.
+    let item = overturned("c2", "c1", "enemy", " was hiding\n him ", NEVER_ENEMIES);
+    let outcome = check_reveals(&mut roster, &unbarred_chapter(), &reveals(&[], &[item]));
+
+    assert!(outcome.rejected.is_empty(), "{:?}", outcome.rejected);
+    let body = overturn("c2", "c1", RelationKind::Enemy, "was hiding him");
+    assert_eq!(outcome.events, [event(4, 2, at(2, 1), NEVER_ENEMIES, body)]);
+    assert_eq!(outcome.kept, 1);
+}
+
+#[test]
+fn overturn_of_an_unheld_relation_is_rejected() {
+    let friend = overturned("c1", "c2", "friend", "never friends", NEVER_ENEMIES);
+    let enemy = overturned("c1", "c2", "enemy", "never enemies", NEVER_ENEMIES);
+    // The roster holds an enemy and no friend; and then no relation at all.
+    for (relations, item) in [(vec![warden_enemy()], friend), (vec![], enemy)] {
+        let mut roster = warden_roster(&relations);
+        let outcome = check_reveals(&mut roster, &unbarred_chapter(), &reveals(&[], std::slice::from_ref(&item)));
+
+        assert_eq!(outcome.rejected, [rejected("not_recorded", item)]);
+        assert!(outcome.events.is_empty());
+        assert_eq!(outcome.kept, 0);
+    }
+}
+
+#[test]
+fn second_overturn_is_rejected() {
+    let mut roster = warden_roster(&[warden_enemy()]);
+    let first = overturned("c1", "c2", "enemy", "never enemies", NEVER_ENEMIES);
+    // The first covers the relation, so the roster holds none for the second, either way round.
+    let second = overturned("c2", "c1", "enemy", "never enemies", NEVER_ENEMIES);
+    let outcome = check_reveals(&mut roster, &unbarred_chapter(), &reveals(&[], &[first, second.clone()]));
+
+    assert_eq!(outcome.rejected, [rejected("not_recorded", second)]);
+    assert_eq!(bodies(&outcome.events), [overturn("c1", "c2", RelationKind::Enemy, "never enemies")]);
+    assert_eq!(outcome.kept, 1);
+}
+
+#[test]
+fn overturn_of_a_directed_kind_needs_its_direction() {
+    let mentor = relation("warden", "corin", "mentor", "teaches him the sword", "the warden taught Corin the sword");
+    let mut roster = warden_roster(&[mentor]);
+    // The warden was Corin's mentor, not Corin the warden's.
+    let backwards = overturned("c2", "c1", "mentor", "no lessons", NO_LESSONS);
+    let forwards = overturned("c1", "c2", "mentor", "no lessons", NO_LESSONS);
+    let outcome = check_reveals(&mut roster, &unbarred_chapter(), &reveals(&[], &[backwards.clone(), forwards]));
+
+    assert_eq!(outcome.rejected, [rejected("not_recorded", backwards)]);
+    assert_eq!(bodies(&outcome.events), [overturn("c1", "c2", RelationKind::Mentor, "no lessons")]);
+}
+
+#[test]
+fn overturn_needs_its_own_evidence() {
+    let mut roster = warden_roster(&[warden_enemy()]);
+    // The quote that stated the relation is in the chapter before, not in this one.
+    let stated = overturned("c1", "c2", "enemy", "never enemies", "Corin swore that the warden was his enemy for life");
+    let short = overturned("c1", "c2", "enemy", "never enemies", "Corin");
+    let outcome = check_reveals(&mut roster, &unbarred_chapter(), &reveals(&[], &[stated.clone(), short.clone()]));
+
+    assert_eq!(outcome.rejected, [rejected("evidence_not_found", stated), rejected("evidence_too_short", short)]);
+    assert!(outcome.events.is_empty());
+}
+
+#[test]
+fn an_overturn_is_turned_down_for_the_first_rule_it_breaks() {
+    // Each item breaks the rule its reason names and every rule after it, in the order malformed, unknown_ref,
+    // self_overturn, bad_kind, not_recorded, then the evidence.
+    let absent = "The warden never once opened the gate";
+    let malformed = json!({ "from": "ghost", "to": "ghost", "kind": "pet", "note": "never" });
+    let unknown = overturned("ghost", "ghost", "pet", "never", absent);
+    let itself = overturned("c1", "c1", "pet", "never", absent);
+    let kind = overturned("c1", "c2", "pet", "never", absent);
+    let unrecorded = overturned("c1", "c2", "friend", "never", absent);
+    let evidence = overturned("c1", "c2", "enemy", "never", absent);
+    let items =
+        [malformed.clone(), unknown.clone(), itself.clone(), kind.clone(), unrecorded.clone(), evidence.clone()];
+    let mut roster = warden_roster(&[warden_enemy()]);
+    let outcome = check_reveals(&mut roster, &unbarred_chapter(), &reveals(&[], &items));
+
+    assert_eq!(
+        outcome.rejected,
+        [
+            rejected("malformed", malformed),
+            rejected("unknown_ref", unknown),
+            rejected("self_overturn", itself),
+            rejected("bad_kind", kind),
+            rejected("not_recorded", unrecorded),
+            rejected("evidence_not_found", evidence),
+        ]
+    );
+    assert!(outcome.events.is_empty());
+}
+
+#[test]
+fn overturn_of_a_merged_pair_is_rejected() {
+    // The stranger, c3, is merged into Tom Reed, c4: the two are one character, which the prompt lists as c4 alone.
+    let (mut roster, _) = stranger_roster(&[same_as("stranger", "tom", STRANGER_IS_TOM)]);
+    let chapter = stranger_chapter();
+    assert_eq!(roster.listed(&chapter), ["c1", "c2", "c4"]);
+    let one = overturned("c4", "c4", "enemy", "never enemies", STRANGER_IS_TOM);
+    let merged_away = overturned("c4", "c3", "enemy", "never enemies", STRANGER_IS_TOM);
+    let outcome = check_reveals(&mut roster, &chapter, &reveals(&[], &[one.clone(), merged_away.clone()]));
+
+    assert_eq!(outcome.rejected, [rejected("self_overturn", one), rejected("unknown_ref", merged_away)]);
+    assert!(outcome.events.is_empty());
+}
+
+#[test]
+fn unlisted_ref_in_a_reveal_is_unknown() {
+    let mut roster = warden_roster(&[warden_enemy()]);
+    let chapter = chapter_text(5, 5, &["The warden walked the wall alone in the rain."]);
+    // Corin, c2, was last seen in chapter 1 and is not named here; and the second call introduces no one, so a
+    // ref of its own is no one.
+    assert_eq!(roster.listed(&chapter), ["c1"]);
+    let evidence = "The warden walked the wall alone";
+    let unlisted = overturned("c1", "c2", "enemy", "never enemies", evidence);
+    let new = relation("c1", "new1", "friend", "walks with him", evidence);
+    let outcome =
+        check_reveals(&mut roster, &chapter, &reveals(std::slice::from_ref(&new), std::slice::from_ref(&unlisted)));
+
+    assert_eq!(outcome.rejected, [rejected("unknown_ref", unlisted), rejected("unknown_ref", new)]);
+    assert!(outcome.events.is_empty());
+}
+
+#[test]
+fn overturn_cannot_cover_its_own_replys_relation() {
+    let mut roster = warden_roster(&[]);
+    let ally = relation("c1", "c2", "ally", "stood with him", ALLIES);
+    let overturn_item = overturned("c1", "c2", "ally", "never allies", NEVER_ENEMIES);
+    // The overturned items are checked first, so the relation this reply reveals is not there to overturn.
+    let outcome =
+        check_reveals(&mut roster, &unbarred_chapter(), &reveals(&[ally], std::slice::from_ref(&overturn_item)));
+
+    assert_eq!(outcome.rejected, [rejected("not_recorded", overturn_item)]);
+    assert_eq!(bodies(&outcome.events), [related("c1", "c2", RelationKind::Ally, "stood with him")]);
+    assert_eq!(outcome.kept, 1);
+}
+
+#[test]
+fn a_reveal_relation_restating_its_own_overturn_is_turned_down() {
+    let mentor = relation("warden", "corin", "mentor", "teaches him the sword", "the warden taught Corin the sword");
+    let mut roster = warden_roster(&[warden_enemy(), mentor]);
+    let overturns = [
+        overturned("c1", "c2", "enemy", "never enemies", NEVER_ENEMIES),
+        overturned("c1", "c2", "mentor", "no lessons", NO_LESSONS),
+        // Turned down, so it overturns nothing.
+        overturned("c1", "c2", "friend", "never friends", NEVER_ENEMIES),
+    ];
+    // An enemy runs no way round, so either order restates the overturned fact; a mentor runs one way, so only the
+    // same way does, and the other way round is a fact of its own.
+    let enemy = relation("c2", "c1", "enemy", "enemies after all", ALLIES);
+    let mentor_again = relation("c1", "c2", "mentor", "teaches him", ALLIES);
+    let mentor_back = relation("c2", "c1", "mentor", "teaches him", ALLIES);
+    let friend = relation("c1", "c2", "friend", "stood with him", ALLIES);
+    let relations = [enemy.clone(), mentor_again.clone(), mentor_back, friend];
+    let outcome = check_reveals(&mut roster, &unbarred_chapter(), &reveals(&relations, &overturns));
+
+    assert_eq!(
+        outcome.rejected,
+        [
+            rejected("not_recorded", overturns[2].clone()),
+            rejected("overturned_in_reply", enemy),
+            rejected("overturned_in_reply", mentor_again),
+        ]
+    );
+    assert_eq!(
+        bodies(&outcome.events),
+        [
+            overturn("c1", "c2", RelationKind::Enemy, "never enemies"),
+            overturn("c1", "c2", RelationKind::Mentor, "no lessons"),
+            related("c2", "c1", RelationKind::Mentor, "teaches him"),
+            related("c1", "c2", RelationKind::Friend, "stood with him"),
+        ]
+    );
+    assert_eq!(outcome.kept, 4);
+}
+
+#[test]
+fn same_as_between_characters_whose_relation_was_overturned_is_refused() {
+    let mut roster = warden_roster(&[warden_enemy()]);
+    let overturn_item = overturned("c1", "c2", "enemy", "never enemies", NEVER_ENEMIES);
+    let outcome = check_reveals(&mut roster, &unbarred_chapter(), &reveals(&[], &[overturn_item]));
+    assert_eq!(bodies(&outcome.events), [overturn("c1", "c2", RelationKind::Enemy, "never enemies")]);
+
+    let chapter =
+        chapter_text(3, 3, &["At the gate the warden lowered his hood, and the face beneath it was Corin's."]);
+    assert_eq!(roster.listed(&chapter), ["c1", "c2"]);
+    let item = same_as("c1", "c2", "the face beneath it was Corin's");
+    let outcome = check(&mut roster, &chapter, &reply_with(&[], &[], std::slice::from_ref(&item)));
+
+    // The overturn says the two were never enemies, not that they are one: the text still told of two.
+    assert_eq!(outcome.rejected, [rejected("related_pair", item)]);
+    assert!(outcome.events.is_empty());
+}
+
+#[test]
+fn reveal_reply_with_the_first_calls_shape_keeps_its_relations() {
+    let mut roster = warden_roster(&[]);
+    let guard = character("new1", description("the guard"), &[], "keep the guard from finding Corin");
+    let ally = relation("c1", "c2", "ally", "stood with him", ALLIES);
+    // No overturned items, and characters and same-as items, which a second call's reply does not hold.
+    let outcome = check_reveals(&mut roster, &unbarred_chapter(), &reply_with(&[guard], &[ally], &[]));
+
+    assert!(outcome.rejected.is_empty(), "{:?}", outcome.rejected);
+    assert_eq!(bodies(&outcome.events), [related("c1", "c2", RelationKind::Ally, "stood with him")]);
+    assert_eq!(outcome.kept, 1);
 }

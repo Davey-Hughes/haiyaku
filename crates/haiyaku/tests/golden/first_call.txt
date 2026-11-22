@@ -1,0 +1,31 @@
+You record the characters of a book one chapter at a time, for a reader who has read to the end of this chapter and no further, and you reply with JSON only.
+---
+Chapter 2: Chapter 2
+
+In the morning the post boat left a letter on the landing stage.
+The letter was addressed to Ada Marsh. She had not seen her own name written down in a long time.
+She read it twice on the steps and put it in her apron pocket.
+At noon a squall came in from the west and went out again as quickly, leaving the planks of the jetty shining.
+On the jetty stood the stranger, his coat dripping. He held his hat in both hands and came no nearer.
+Ada nodded to the stranger, and he nodded back. Neither of them said a word.
+Pip flew down and walked twice round the stranger's boots, then went back to the rail.
+
+Characters so far (ref | name | other names):
+c1 | the keeper |
+c2 | Pip |
+
+Relations so far (from | kind | to | note):
+c1 | owns | c2 | her gull
+
+Rules:
+- Use only what this chapter's text and the lists above say. You may know this book: ignore everything you know about it beyond them. Never state a name, identity, relationship or fact that they have not shown by the end of this chapter.
+- characters: every named character who appears, speaks or is described in this chapter. Include an unnamed character only if they matter to what happens; leave out bystanders and crowds (a secretary, passers-by, people in the street) and people only mentioned in passing.
+  - A character listed above under "Characters so far" keeps its ref. A character called by a personal name listed there (a given name or a surname, not a description or a form of address) is that listed character, unless this chapter shows it is someone else; one called by a listed description or form of address ("the stranger", "Mum") is that listed character only when this chapter shows it is. Any other character gets a ref of its own that is not listed (new1, new2, ...).
+  - name: for a listed character, the name listed for it, unless this chapter gives it a fuller one: then that name. For a new character, the fullest name this chapter gives; an unnamed character gets a short description copied from the text.
+  - aliases: the other names and forms of address this chapter uses for the character (for example "Mr. Smith", "the Headmaster"). Never a pronoun.
+  - In each name and alias, text is the name copied exactly as this chapter writes it, or as the list writes it for a listed name. A name you give from this chapter is one run of words that stands in it in that order and form: never a name joined from parts the chapter writes apart (when the chapter writes "Ann and Joe Bell", Ann's name is "Ann"), never "Given Surname" built from "Surname, Given", and never a description in your own words ("a man in a grey coat" as the chapter has it, not "the grey-coated stranger"). given, surname and title label the parts of it that are a given name, a surname and a title, and are null when it has no such part; a title may follow the name. A description ("the tall woman", "엄마") has no labels. title_sex is "male" or "female" only when the title itself tells it, and null otherwise.
+- relations: relationships this chapter states or clearly shows. from and to are refs listed above or in your characters list. kind is one of: family, romance, friend, ally, rival, enemy, mentor, serves, colleague, acquaintance, owns. note is a few words (for example "uncle", "best friend"). The order of from and to matters only for mentor, serves and owns, which run from the mentor, the servant and the owner (mentor: from regularly teaches or guides to; not a single act of help). A pair already listed above gains a further relation when this chapter reveals one of another kind, even one that contradicts what is listed: give it as well.
+- same_as: only when this chapter reveals that two characters (listed above or in your characters list) are one. ref and other are the refs of two different characters: a character that only appears again is not a same_as.
+- evidence: a phrase or a sentence copied exactly from this chapter, character for character, that shows the item. Never paraphrase it: never a name where the text has a pronoun, never two passages joined with "..." or any other mark, never a word or its ending changed.
+---
+{"additionalProperties":false,"properties":{"characters":{"items":{"additionalProperties":false,"properties":{"aliases":{"items":{"additionalProperties":false,"properties":{"given":{"type":["string","null"]},"surname":{"type":["string","null"]},"text":{"type":"string"},"title":{"type":["string","null"]},"title_sex":{"enum":["male","female",null],"type":["string","null"]}},"required":["given","surname","text","title","title_sex"],"type":"object"},"type":"array"},"evidence":{"type":"string"},"name":{"additionalProperties":false,"properties":{"given":{"type":["string","null"]},"surname":{"type":["string","null"]},"text":{"type":"string"},"title":{"type":["string","null"]},"title_sex":{"enum":["male","female",null],"type":["string","null"]}},"required":["given","surname","text","title","title_sex"],"type":"object"},"ref":{"type":"string"}},"required":["aliases","evidence","name","ref"],"type":"object"},"type":"array"},"relations":{"items":{"additionalProperties":false,"properties":{"evidence":{"type":"string"},"from":{"type":"string"},"kind":{"enum":["family","romance","friend","ally","rival","enemy","mentor","serves","colleague","acquaintance","owns"],"type":"string"},"note":{"type":"string"},"to":{"type":"string"}},"required":["evidence","from","kind","note","to"],"type":"object"},"type":"array"},"same_as":{"items":{"additionalProperties":false,"properties":{"evidence":{"type":"string"},"other":{"type":"string"},"ref":{"type":"string"}},"required":["evidence","other","ref"],"type":"object"},"type":"array"}},"required":["characters","relations","same_as"],"type":"object"}
