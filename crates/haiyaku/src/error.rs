@@ -24,6 +24,13 @@ pub enum Error {
     /// A file holds a different book from the one asked for. `found` is the hash of the one book the file
     /// holds, or says how many there are when that is not one: `no book`, `2 books`.
     HashMismatch { expected: String, found: String },
+    // Epub and Model are built only by code behind the `extract` feature, and are variants with every set
+    // of features: an enum whose shape depends on features breaks a caller's `match`.
+    /// A file cannot be read as an EPUB; the string says what is wrong with it, and where.
+    Epub(String),
+    /// A model backend failed, timed out, or answered with something that is not the JSON asked for; the
+    /// string says which.
+    Model(String),
 }
 
 impl fmt::Display for Error {
@@ -44,6 +51,8 @@ impl fmt::Display for Error {
             Self::HashMismatch { expected, found } => {
                 write!(f, "expected the book with sha256 {expected}, found {found}")
             }
+            Self::Epub(what) => write!(f, "EPUB: {what}"),
+            Self::Model(what) => write!(f, "model: {what}"),
         }
     }
 }
@@ -57,7 +66,9 @@ impl std::error::Error for Error {
             | Self::Invalid(_)
             | Self::ForeignKeysOff
             | Self::SchemaTooNew { .. }
-            | Self::HashMismatch { .. } => None,
+            | Self::HashMismatch { .. }
+            | Self::Epub(_)
+            | Self::Model(_) => None,
         }
     }
 }
@@ -81,13 +92,15 @@ mod tests {
     use super::*;
 
     /// One of each variant that has no cause, with the text its message has to carry.
-    fn without_a_cause() -> [(Error, Vec<&'static str>); 5] {
+    fn without_a_cause() -> [(Error, Vec<&'static str>); 7] {
         [
             (Error::NotFound("book abc".into()), vec!["book abc"]),
             (Error::Invalid("seq must run 1, 2, 3".into()), vec!["seq must run 1, 2, 3"]),
             (Error::ForeignKeysOff, vec!["foreign_keys"]),
             (Error::SchemaTooNew { found: 7, supported: 3 }, vec!["version 7", "version 3"]),
             (Error::HashMismatch { expected: "abc".into(), found: "2 books".into() }, vec!["abc", "2 books"]),
+            (Error::Epub("no table of contents".into()), vec!["no table of contents"]),
+            (Error::Model("timed out after 600 s".into()), vec!["timed out after 600 s"]),
         ]
     }
 
@@ -125,6 +138,21 @@ mod tests {
         for (error, _) in without_a_cause() {
             assert!(error.source().is_none(), "{error:?}");
         }
+    }
+
+    #[test]
+    fn epub_and_model_errors_say_what_failed() {
+        let epub = Error::Epub("no table of contents".into());
+        let message = epub.to_string();
+        assert!(message.contains("EPUB"), "{message:?}");
+        assert!(message.contains("no table of contents"), "{message:?}");
+        assert!(epub.source().is_none());
+
+        let model = Error::Model("timed out after 600 s".into());
+        let message = model.to_string();
+        assert!(message.contains("model"), "{message:?}");
+        assert!(message.contains("timed out after 600 s"), "{message:?}");
+        assert!(model.source().is_none());
     }
 
     #[test]

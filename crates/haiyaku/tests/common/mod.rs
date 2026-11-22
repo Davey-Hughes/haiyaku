@@ -1,7 +1,14 @@
-//! The invented books the integration tests share, and a database to put them in.
+//! The invented books the integration tests share, a database to put them in, and a one-shot HTTP server.
 
 // Each test binary compiles this module for itself and uses only some of it.
 #![allow(dead_code)]
+
+#[cfg(feature = "extract")]
+pub mod epub;
+
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::{TcpListener, TcpStream};
+use std::thread::JoinHandle;
 
 use haiyaku::fold::EntityKey;
 use haiyaku::log::{
@@ -16,6 +23,49 @@ pub fn db() -> Connection {
     conn.pragma_update(None, "foreign_keys", "ON").unwrap();
     haiyaku::store::migrate(&conn).unwrap();
     conn
+}
+
+/// A server on a free port of 127.0.0.1 that answers one request with `status` and `body`, and hands back the
+/// request it read: the request line, the headers and the body. The first value is its `http://127.0.0.1:<port>`.
+pub fn serve_once(status: u16, body: &str) -> (String, JoinHandle<String>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let reason = if (200..300).contains(&status) { "OK" } else { "Error" };
+    let response = format!(
+        "HTTP/1.1 {status} {reason}\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\
+         connection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let server = std::thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        let request = read_request(&stream);
+        (&stream).write_all(response.as_bytes()).unwrap();
+        request
+    });
+    (url, server)
+}
+
+/// One request off `stream`, read to the end of the body its `content-length` gives.
+fn read_request(stream: &TcpStream) -> String {
+    let mut reader = BufReader::new(stream);
+    let mut request = String::new();
+    let mut length = 0;
+    loop {
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        if let Some((name, value)) = line.split_once(':')
+            && name.eq_ignore_ascii_case("content-length")
+        {
+            length = value.trim().parse().unwrap();
+        }
+        request.push_str(&line);
+        if line == "\r\n" || line.is_empty() {
+            break;
+        }
+    }
+    let mut body = vec![0; length];
+    reader.read_exact(&mut body).unwrap();
+    request + &String::from_utf8(body).unwrap()
 }
 
 /// "The Lighthouse Keeper": the keeper is named in chapter 2, and the stranger of chapter 2 turns out in

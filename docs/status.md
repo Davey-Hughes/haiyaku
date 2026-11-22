@@ -1,6 +1,6 @@
 # Status
 
-Where haiyaku stands, what is decided, and what comes next. Updated 2026-11-21.
+Where haiyaku stands, what is decided, and what comes next. Updated 2026-11-22.
 
 ## Where it stands
 
@@ -9,8 +9,12 @@ Claude Sonnet produced consistent, grounded character events at 12 s a
 chapter; gemma4 12B did not, so Claude is the backend while building. The findings are in [notes.md](notes.md).
 The core crate exists in `crates/haiyaku`: the schema, the store, the fold
 and the sidecars, built from
-[the core plan](superpowers/plans/2026-11-21-haiyaku-core.md). There is no
-extraction yet.
+[the core plan](superpowers/plans/2026-11-21-haiyaku-core.md). The EPUB
+reader (`book`) and the model backends (`llm`: the Claude CLI, Ollama, an
+OpenAI-compatible server and recorded replies) exist behind the `extract`
+feature, built from Part A of
+[plan 2](superpowers/plans/2026-11-21-haiyaku-extraction.md). Extraction
+itself, `extract` and `show` are Part B.
 
 ## Decided
 
@@ -42,13 +46,18 @@ extraction yet.
   share no code.
 - Logs live in a structured SQLite schema, database first. A sidecar file
   with the same schema carries a log from the desktop to taiyaku.
+- The consumer of the library decides how the data is drawn, so that taiyaku
+  controls its own style: the library hands out the cast as data and builds
+  no markup. The HTML view that checks a run belongs to the binary (O7).
 - The design: [the library design](superpowers/specs/2026-11-21-haiyaku-library-design.md).
 - The spike lives outside the workspace without the gates. Code leaves it only
   through a design doc and a plan.
 
 ## Next
 
-1. Plan 2, extraction (EPUB reader, model backends, `extract`, `show`).
+1. Build Part B of [plan 2](superpowers/plans/2026-11-21-haiyaku-extraction.md)
+   (extraction, the `haiyaku` binary's `extract` and `show`, the acceptance
+   run).
 2. Plan 3, series linking, with the English and Korean acceptance runs.
 
 ## Open
@@ -66,3 +75,6 @@ extraction yet.
   advisories job.
 - O6: Importing rows from a sidecar at an older schema version cannot be
   tested until a version 2 migration exists; that migration adds the test.
+- O7: How far "the consumer decides how the data is drawn" goes: data only,
+  as plan 2 builds it, or also style hooks on a view the library ships.
+  Decide when the taiyaku integration is designed.
