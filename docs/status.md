@@ -110,6 +110,8 @@ leaves O18 to O23 open; it is in [notes.md](notes.md).
   controls its own style: the library hands out the cast as data and builds
   no markup. The HTML view that checks a run belongs to the binary (O7).
 - The design: [the library design](superpowers/specs/2026-11-21-haiyaku-library-design.md).
+- haiyaku is published on crates.io, and taiyaku depends on the published
+  crate. Its source is public at https://github.com/Davey-Hughes/haiyaku.
 - The spike lives outside the workspace without the gates. Code leaves it only
   through a design doc and a plan.
 

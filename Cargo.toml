@@ -6,14 +6,14 @@ members = ["crates/haiyaku"]
 exclude = ["spike"]
 
 [workspace.package]
-version = "0.0.0"
+version = "0.1.0"
 edition = "2024"
 # taiyaku's, since taiyaku builds haiyaku as a dependency: a higher floor here
 # would raise taiyaku's. CI checks every target with every feature at this
 # version, and clippy's MSRV-gated lints read it.
 rust-version = "1.91"
 license = "GPL-3.0-or-later"
-repository = "https://forge.daveynet.xyz/davey/haiyaku"
+repository = "https://github.com/Davey-Hughes/haiyaku"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
