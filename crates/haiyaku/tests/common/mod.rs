@@ -353,6 +353,11 @@ pub fn keepers() -> Series {
     }
 }
 
+/// The logs of [`keepers`]' two books, which [`keepers_links`] are made against.
+pub fn keepers_logs() -> [BookLog; 2] {
+    [keeper(), keepers_return()]
+}
+
 /// The links of [`keepers`]' order. Ada is linked on her name where the second book introduces her; the old
 /// sailor only where its third chapter calls him Tom.
 pub fn keepers_links() -> Vec<Link> {

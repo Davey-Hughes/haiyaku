@@ -7,7 +7,7 @@ mod common;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use common::{db, keeper, keepers, keepers_links, keepers_return};
+use common::{db, keeper, keepers, keepers_links, keepers_logs, keepers_return};
 use haiyaku::fold::fold_book;
 use haiyaku::log::BookLog;
 use haiyaku::store::{
@@ -173,7 +173,8 @@ fn read_book_reads_one_state_while_the_book_is_rewritten() {
 fn read_series_reads_one_state_while_the_series_is_replaced() {
     let dir = dir();
     // The orders are read after the series' title and before the books of each.
-    let (reader, written) = interrupted_reader(dir.path(), "haiyaku_order", |writer| put_series(writer, &reordered()));
+    let (reader, written) =
+        interrupted_reader(dir.path(), "haiyaku_order", |writer| put_series(writer, &reordered()).map(drop));
 
     let series = read_series(&reader, "keepers").unwrap();
     assert_written(&written);
@@ -186,13 +187,14 @@ fn read_series_reads_one_state_while_the_series_is_replaced() {
 fn read_links_reads_one_state_while_the_series_is_replaced() {
     let dir = dir();
     // The order is looked for first, and its links are read after.
-    let (reader, written) = interrupted_reader(dir.path(), "haiyaku_order", |writer| put_series(writer, &reordered()));
+    let (reader, written) =
+        interrupted_reader(dir.path(), "haiyaku_order", |writer| put_series(writer, &reordered()).map(drop));
     // Links take two books, so the library gets the second and the series of both before the read.
     let mut library = Connection::open(dir.path().join("library.db")).unwrap();
     library.pragma_update(None, "foreign_keys", "ON").unwrap();
     write_book(&mut library, &keepers_return()).unwrap();
     put_series(&mut library, &keepers()).unwrap();
-    put_links(&mut library, "keepers", "published", &keepers_links()).unwrap();
+    put_links(&mut library, "keepers", "published", &keepers_links(), &keepers_logs()).unwrap();
 
     let links = read_links(&reader, "keepers", "published").unwrap();
     assert_written(&written);

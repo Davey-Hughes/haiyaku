@@ -31,6 +31,33 @@ pub enum QuoteError {
 /// [`QuoteError::TooShort`] when the parts weigh less than [`MIN_QUOTE_WEIGHT`] together, whether or not the
 /// chapter says them; [`QuoteError::NotFound`] when it does not say them in that order.
 pub fn locate_quote(chapter: &ChapterText, quote: &str) -> Result<Position, QuoteError> {
+    let mut text = String::new();
+    // Where each block's reduced text starts in `text`, rising with the blocks.
+    let mut starts = Vec::with_capacity(chapter.blocks.len());
+    for block in &chapter.blocks {
+        starts.push(text.len());
+        text.push_str(&reduce(&block.text));
+    }
+
+    let start = find_quote(&text, quote)?;
+    // The last block that starts at or before the match. A block with no letter or digit starts where the next
+    // one does, so taking the last such start passes over it to the block the match is in.
+    let block = starts.partition_point(|&block_start| block_start <= start) - 1;
+    Ok(chapter.blocks[block].at.clone())
+}
+
+/// Whether `text` holds `quote`, as [`locate_quote`] finds a quote in a chapter whose one block is `text`.
+///
+/// # Errors
+///
+/// Those of [`locate_quote`].
+pub(crate) fn quote_in(text: &str, quote: &str) -> Result<(), QuoteError> {
+    find_quote(&reduce(text), quote).map(|_| ())
+}
+
+/// Where `quote` starts in `text`, which is reduced already, by the rule [`locate_quote`] states. It is the
+/// whole of that rule, shared with [`quote_in`] so that the two cannot come to disagree.
+fn find_quote(text: &str, quote: &str) -> Result<usize, QuoteError> {
     // A part with nothing left once reduced would match anywhere, and as the first part would place the quote
     // wherever the search starts.
     let parts: Vec<String> =
@@ -40,23 +67,12 @@ pub fn locate_quote(chapter: &ChapterText, quote: &str) -> Result<Position, Quot
     }
     let (first, rest) = parts.split_first().ok_or(QuoteError::TooShort)?;
 
-    let mut text = String::new();
-    // Where each block's reduced text starts in `text`, rising with the blocks.
-    let mut starts = Vec::with_capacity(chapter.blocks.len());
-    for block in &chapter.blocks {
-        starts.push(text.len());
-        text.push_str(&reduce(&block.text));
-    }
-
     let start = text.find(first.as_str()).ok_or(QuoteError::NotFound)?;
     let mut end = start + first.len();
     for part in rest {
         end += text[end..].find(part.as_str()).ok_or(QuoteError::NotFound)? + part.len();
     }
-    // The last block that starts at or before the match. A block with no letter or digit starts where the next
-    // one does, so taking the last such start passes over it to the block the match is in.
-    let block = starts.partition_point(|&block_start| block_start <= start) - 1;
-    Ok(chapter.blocks[block].at.clone())
+    Ok(start)
 }
 
 /// The first block in which `name` stands as whole words.
@@ -165,4 +181,34 @@ fn writes_a_syllable(c: char) -> bool {
         | '\u{20000}'..='\u{3FFFF}'
         | '\u{3005}'
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::book::PlacedBlock;
+
+    #[test]
+    fn quote_in_finds_what_locate_quote_finds() {
+        let text = "\u{201c}The lamp at Gull Point burned all night,\u{201d} Ada said, and counted every step.";
+        let chapter = ChapterText {
+            number: 1,
+            toc_entry: 1,
+            title: "Chapter 1".into(),
+            documents: 0..1,
+            blocks: vec![PlacedBlock { at: Position { document: 0, block: 0 }, text: text.into() }],
+        };
+        for (quote, holds) in [
+            ("the LAMP, at gull-point,   burned all NIGHT", Ok(())),
+            ("The lamp... counted every step", Ok(())),
+            ("Gull Point \u{2026} Ada said...", Ok(())),
+            ("Ada", Err(QuoteError::TooShort)),
+            ("Ada... said", Err(QuoteError::TooShort)),
+            ("Ada sailed for the mainland", Err(QuoteError::NotFound)),
+            ("counted every step... The lamp at Gull Point", Err(QuoteError::NotFound)),
+        ] {
+            assert_eq!(quote_in(text, quote), holds, "{quote}");
+            assert_eq!(locate_quote(&chapter, quote).map(|_| ()), holds, "{quote}");
+        }
+    }
 }

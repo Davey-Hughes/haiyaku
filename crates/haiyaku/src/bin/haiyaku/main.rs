@@ -1,13 +1,19 @@
 //! The `haiyaku` command. Its `extract` lists a book's table of contents, or extracts a range of its entries
-//! with a model into the database; its `show` prints the cast an extracted book has after a chapter, or writes
-//! a page that steps through it chapter by chapter.
+//! with a model into the database; its `show` prints the cast an extracted book has after a chapter, alone or
+//! after the books before it in a reading order of its series, or writes a page that steps through it chapter by
+//! chapter; its `series` stores the series a series file names; its `link` links the characters of each reading
+//! order of that series across its books with a model; and its `export` writes the sidecar of a book, or of a
+//! series with its books and links.
 //!
 //! The paths, the environment and every line of output are the binary's: the library reads no environment
 //! variable and prints nothing.
 
 mod clock;
+mod export;
 mod extract;
+mod link;
 mod paths;
+mod series;
 mod show;
 mod view;
 
@@ -39,6 +45,14 @@ enum Command {
     /// Print the characters of an extracted book and how they relate, as a reader knows them after a chapter, or
     /// write a page that steps through them chapter by chapter
     Show(show::Args),
+    /// Store the series a series file names, with its reading orders, in place of the stored series of its name
+    Series(series::Args),
+    /// Link the characters of each reading order of a stored series that are characters of a book before theirs,
+    /// with a model, and store each order's links in place of those it had
+    Link(link::Args),
+    /// Write the sidecar of an extracted book beside its EPUB, or of a stored series, with its books and links,
+    /// beside its series file
+    Export(export::Args),
 }
 
 fn main() -> ExitCode {
@@ -46,6 +60,9 @@ fn main() -> ExitCode {
     let outcome = match &cli.command {
         Command::Extract(args) => extract::run(args, cli.db.as_deref(), &env),
         Command::Show(args) => show::run(args, cli.db.as_deref(), &env),
+        Command::Series(args) => series::run(args, cli.db.as_deref(), &env),
+        Command::Link(args) => link::run(args, cli.db.as_deref(), &env),
+        Command::Export(args) => export::run(args, cli.db.as_deref(), &env),
     };
     match outcome {
         Ok(()) => ExitCode::SUCCESS,
@@ -87,6 +104,12 @@ fn open_database(path: &Path) -> Result<Connection, Failure> {
         fs::create_dir_all(dir).map_err(|error| Failure(format!("{}: {error}", dir.display())))?;
     }
     let conn = Connection::open(path).map_err(|error| Failure(format!("{}: {error}", path.display())))?;
+    writable(&conn, path)?;
+    set_up(conn)
+}
+
+/// Fails unless the database `conn` has open, the one at `path`, takes a write.
+fn writable(conn: &Connection, path: &Path) -> Result<(), Failure> {
     // SQLite opens a file it may not write read-only, without an error, and the first write would then fail
     // only once the work it stores is done.
     if conn.is_readonly(rusqlite::MAIN_DB).map_err(haiyaku::Error::from)? {
@@ -96,8 +119,7 @@ fn open_database(path: &Path) -> Result<Connection, Failure> {
     // journal a write needs, nor while another run holds the write lock. Migrating a current schema writes
     // nothing, and migrating an older one or an empty file would fail with SQLite's bare error, so the write is
     // tried first: it says which of the two it is, before the run pays for the work it would store.
-    try_write(&conn).map_err(|error| write_failure(path, &error))?;
-    set_up(conn)
+    try_write(conn).map_err(|error| write_failure(path, &error))
 }
 
 /// Why the database at `path` took no write. Another run's write lock outlasting the busy timeout is no fault of
@@ -124,6 +146,21 @@ fn try_write(conn: &Connection) -> rusqlite::Result<()> {
 /// no haiyaku tables in it. For a command that only reads: opening a database that is not there would leave
 /// an empty one behind, and its directory with it.
 fn open_existing_database(path: &Path) -> Result<Option<Connection>, Failure> {
+    existing(path)?.map(set_up).transpose()
+}
+
+/// [`open_existing_database`] for a command that stores what it makes from the books the database holds already,
+/// as `series` and `link` do: a database that is not there holds none, and making it would leave an empty one
+/// behind. The database is shown to take a write, as [`open_database`] shows it.
+fn open_existing_database_to_write(path: &Path) -> Result<Option<Connection>, Failure> {
+    let Some(conn) = existing(path)? else { return Ok(None) };
+    writable(&conn, path)?;
+    set_up(conn).map(Some)
+}
+
+/// The database at `path` as it is, not yet set up, or `None` when there is no file there or no haiyaku tables
+/// in it.
+fn existing(path: &Path) -> Result<Option<Connection>, Failure> {
     if !path.try_exists().map_err(|error| Failure(format!("{}: {error}", path.display())))? {
         return Ok(None);
     }
@@ -138,7 +175,7 @@ fn open_existing_database(path: &Path) -> Result<Option<Connection>, Failure> {
     if haiyaku::store::schema_version(&conn)?.is_none() {
         return Ok(None);
     }
-    set_up(conn).map(Some)
+    Ok(Some(conn))
 }
 
 /// Foreign keys on, which the library's writes refuse to go without, and haiyaku's tables brought up to date.

@@ -1,16 +1,17 @@
-//! Sidecar files: a book exported to a file of its own and imported into another database, and the hash of
-//! a file.
+//! Sidecar files: a book, or a series with its books, exported to a file of its own and imported into
+//! another database; and the hash of a file.
 
 mod common;
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use common::{db, keeper, keeper_with_appearance, keepers, keepers_links, keepers_return, version_one};
+use common::{db, keeper, keeper_with_appearance, keepers, keepers_links, keepers_logs, keepers_return, version_one};
 use haiyaku::Error;
+use haiyaku::log::BookLog;
 use haiyaku::store::{
-    SCHEMA_VERSION, export_book, import_book, put_links, put_series, read_book, read_links, schema_version,
-    sha256_file, write_book,
+    SCHEMA_VERSION, Series, export_book, export_series, import_book, import_series, put_links, put_series, read_book,
+    read_links, read_series, schema_version, sha256_file, write_book,
 };
 use rusqlite::Connection;
 use tempfile::TempDir;
@@ -53,6 +54,39 @@ fn assert_no_book(target: &Connection) {
     }
 }
 
+/// Both books, [`keepers`] and the links of its order.
+fn library() -> Connection {
+    let mut library = db();
+    write_book(&mut library, &keeper()).unwrap();
+    write_book(&mut library, &keepers_return()).unwrap();
+    put_series(&mut library, &keepers()).unwrap();
+    put_links(&mut library, "keepers", "published", &keepers_links(), &keepers_logs()).unwrap();
+    library
+}
+
+/// [`keepers`] exported from [`library`] to `keepers.series.haiyaku.db` in `dir`, where the binary would write it.
+fn exported_series(dir: &Path) -> PathBuf {
+    let path = dir.join("keepers.series.haiyaku.db");
+    export_series(&library(), "keepers", &path).unwrap();
+    path
+}
+
+/// `log` as another extraction of its book left it: the same events, from another run.
+fn extracted_again(mut log: BookLog) -> BookLog {
+    log.book.extracted_at = "2026-03-01T00:00:00Z".into();
+    log
+}
+
+/// A database that holds the first book, the second as another extraction left it, and [`keepers`] without
+/// links.
+fn library_with_another_return() -> Connection {
+    let mut library = db();
+    write_book(&mut library, &keeper()).unwrap();
+    write_book(&mut library, &extracted_again(keepers_return())).unwrap();
+    put_series(&mut library, &keepers()).unwrap();
+    library
+}
+
 #[test]
 fn export_then_import() {
     let dir = dir();
@@ -70,7 +104,7 @@ fn export_holds_the_one_book_and_no_series() {
     write_book(&mut source, &keeper()).unwrap();
     write_book(&mut source, &keepers_return()).unwrap();
     put_series(&mut source, &keepers()).unwrap();
-    put_links(&mut source, "keepers", "published", &keepers_links()).unwrap();
+    put_links(&mut source, "keepers", "published", &keepers_links(), &keepers_logs()).unwrap();
 
     let second = keepers_return().book.sha256;
     let path = dir.path().join("return.haiyaku.db");
@@ -108,7 +142,7 @@ fn importing_an_unchanged_book_keeps_its_links() {
     write_book(&mut library, &keeper()).unwrap();
     write_book(&mut library, &keepers_return()).unwrap();
     put_series(&mut library, &keepers()).unwrap();
-    put_links(&mut library, "keepers", "published", &keepers_links()).unwrap();
+    put_links(&mut library, "keepers", "published", &keepers_links(), &keepers_logs()).unwrap();
 
     // As a scan of the library's folder does: every sidecar it finds, changed or not.
     for (name, log) in [("keeper.haiyaku.db", keeper()), ("return.haiyaku.db", keepers_return())] {
@@ -297,6 +331,151 @@ fn failed_export_leaves_no_temporary_file() {
     assert!(matches!(result, Err(Error::Io(_))), "{result:?}");
     assert_eq!(files(dir.path()), ["keeper.haiyaku.db"]);
     assert!(taken.is_dir());
+}
+
+#[test]
+fn series_sidecar_round_trips() {
+    let dir = dir();
+    let source = library();
+    let sidecar = dir.path().join("keepers.series.haiyaku.db");
+    export_series(&source, "keepers", &sidecar).unwrap();
+    // The temporary file the export wrote to is gone, and so is its journal.
+    assert_eq!(files(dir.path()), ["keepers.series.haiyaku.db"]);
+
+    let mut target = db();
+    assert_eq!(import_series(&mut target, &sidecar).unwrap(), keepers());
+    assert_eq!(read_series(&target, "keepers").unwrap(), read_series(&source, "keepers").unwrap());
+    assert_eq!(
+        read_links(&target, "keepers", "published").unwrap(),
+        read_links(&source, "keepers", "published").unwrap()
+    );
+    for sha256 in [keeper().book.sha256, keepers_return().book.sha256] {
+        assert_eq!(read_book(&target, &sha256).unwrap(), read_book(&source, &sha256).unwrap());
+    }
+}
+
+#[test]
+fn series_import_replaces_a_differing_log_and_keeps_the_sidecars_links() {
+    let dir = dir();
+    let sidecar = exported_series(dir.path());
+
+    let mut target = library_with_another_return();
+    import_series(&mut target, &sidecar).unwrap();
+    assert_eq!(read_book(&target, &keepers_return().book.sha256).unwrap(), keepers_return());
+    assert_eq!(read_links(&target, "keepers", "published").unwrap(), keepers_links());
+}
+
+#[test]
+fn book_sidecar_imported_after_drops_that_books_links() {
+    let dir = dir();
+    let sidecar = exported_series(dir.path());
+    let mut target = library_with_another_return();
+    import_series(&mut target, &sidecar).unwrap();
+
+    let differing = extracted_again(keepers_return());
+    let mut elsewhere = db();
+    write_book(&mut elsewhere, &differing).unwrap();
+    let book_sidecar = dir.path().join("return.haiyaku.db");
+    export_book(&elsewhere, &differing.book.sha256, &book_sidecar).unwrap();
+
+    import_book(&mut target, &book_sidecar, &differing.book.sha256).unwrap();
+    assert_eq!(read_book(&target, &differing.book.sha256).unwrap(), differing);
+    // Both links name the second book: the ids they hold need not mean the same characters in its new log.
+    assert_eq!(read_links(&target, "keepers", "published").unwrap(), []);
+    assert_eq!(read_series(&target, "keepers").unwrap(), keepers());
+}
+
+// The links are refused after both books have been written, and those writes dropped the links of another
+// series: the rollback has to take all of it back.
+#[test]
+fn failed_series_import_changes_nothing() {
+    let dir = dir();
+    let sidecar = exported_series(dir.path());
+    // As by hand, past the export's checks: the old sailor's link moved to chapter 2's document while it still
+    // holds from chapter 3.
+    let file = Connection::open(&sidecar).unwrap();
+    file.pragma_update(None, "foreign_keys", "OFF").unwrap();
+    let moved = file.execute("UPDATE haiyaku_link SET document = 2 WHERE later_entity = 'sailor'", []).unwrap();
+    assert_eq!(moved, 1);
+    drop(file);
+
+    let mut target = db();
+    let (first, second) = (extracted_again(keeper()), extracted_again(keepers_return()));
+    write_book(&mut target, &first).unwrap();
+    write_book(&mut target, &second).unwrap();
+    let lighthouse =
+        Series { name: "lighthouse".into(), title: "The Lighthouse Books".into(), orders: keepers().orders };
+    put_series(&mut target, &lighthouse).unwrap();
+    put_links(&mut target, "lighthouse", "published", &keepers_links(), &[first.clone(), second.clone()]).unwrap();
+
+    let result = import_series(&mut target, &sidecar);
+    assert!(matches!(&result, Err(Error::Invalid(why)) if why.contains("document 2")), "{result:?}");
+    assert_eq!(read_book(&target, &first.book.sha256).unwrap(), first);
+    assert_eq!(read_book(&target, &second.book.sha256).unwrap(), second);
+    assert_eq!(read_series(&target, "lighthouse").unwrap(), lighthouse);
+    assert_eq!(read_links(&target, "lighthouse", "published").unwrap(), keepers_links());
+    assert!(matches!(read_series(&target, "keepers"), Err(Error::NotFound(_))));
+    assert_eq!(count(&target, "haiyaku_link"), 2);
+}
+
+#[test]
+fn import_refuses_a_sidecar_without_one_series() {
+    let dir = dir();
+    let book_sidecar = exported(dir.path());
+    let two_series = exported_series(dir.path());
+    let mut second = Connection::open(&two_series).unwrap();
+    second.pragma_update(None, "foreign_keys", "ON").unwrap();
+    put_series(&mut second, &Series { name: "lighthouse".into(), ..keepers() }).unwrap();
+    drop(second);
+
+    let mut target = db();
+    for (sidecar, held) in [(&book_sidecar, "0 series"), (&two_series, "2 series")] {
+        let result = import_series(&mut target, sidecar);
+        let named = sidecar.display().to_string();
+        assert!(
+            matches!(&result, Err(Error::Invalid(why)) if why.contains(&named) && why.contains(held)),
+            "{result:?}"
+        );
+    }
+    assert_no_book(&target);
+}
+
+// Only a file written with its foreign keys off can list a book it does not hold.
+#[test]
+fn import_refuses_a_series_sidecar_without_a_book_it_lists() {
+    let dir = dir();
+    let sidecar = exported_series(dir.path());
+    let second = keepers_return().book.sha256;
+    let file = Connection::open(&sidecar).unwrap();
+    file.pragma_update(None, "foreign_keys", "OFF").unwrap();
+    file.execute("DELETE FROM haiyaku_book WHERE sha256 = ?1", [&second]).unwrap();
+    drop(file);
+
+    let mut target = db();
+    let result = import_series(&mut target, &sidecar);
+    let named = sidecar.display().to_string();
+    assert!(matches!(&result, Err(Error::Invalid(why)) if why.contains(&named) && why.contains(&second)), "{result:?}");
+    assert_no_book(&target);
+}
+
+#[test]
+fn series_import_requires_foreign_keys() {
+    let dir = dir();
+    let sidecar = exported_series(dir.path());
+
+    let mut target = db();
+    target.pragma_update(None, "foreign_keys", "OFF").unwrap();
+    let result = import_series(&mut target, &sidecar);
+    assert!(matches!(result, Err(Error::ForeignKeysOff)), "{result:?}");
+    assert_no_book(&target);
+}
+
+#[test]
+fn export_of_an_unknown_series_writes_nothing() {
+    let dir = dir();
+    let result = export_series(&library(), "nobody", &dir.path().join("nobody.haiyaku.db"));
+    assert!(matches!(&result, Err(Error::NotFound(what)) if what == "series nobody"), "{result:?}");
+    assert!(files(dir.path()).is_empty());
 }
 
 #[test]

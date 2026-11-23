@@ -2,6 +2,7 @@
 //! reveals or overturns, with every item of each reply checked against the chapter's text before it enters the
 //! log.
 
+pub(crate) mod cache;
 mod check;
 mod prompt;
 mod roster;
@@ -13,3 +14,4 @@ pub use prompt::{PROMPT_VERSION, SYSTEM, prompt, reveal_prompt};
 pub use roster::Roster;
 pub use run::{Options, extract_book};
 pub use text::{MIN_QUOTE_WEIGHT, QuoteError, locate_name, locate_quote, weight};
+pub(crate) use text::{quote_in, reduce};

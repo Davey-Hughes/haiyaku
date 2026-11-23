@@ -37,33 +37,45 @@ pub fn write_book(conn: &mut Connection, log: &BookLog) -> Result<()> {
     // The foreign keys are what refuses a dangling reference below and what takes an event's child rows
     // with it.
     require_foreign_keys(conn)?;
-    check_hash(&log.book.sha256)?;
-    check_reading_order(&log.events)?;
-    check_layout(log)?;
-
-    let book = &log.book;
-    let sha256 = book.sha256.as_str();
+    check_log(log)?;
     // Immediate, so the write lock is taken before the stored log is read. A deferred transaction would
     // read first, and SQLite refuses at once to let a connection that has read wait for another writer:
     // the write would fail as busy where the caller's busy timeout should have waited. Dropping the
     // transaction on an error rolls it back.
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    write_log(&tx, log)?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// The rules of [`write_book`] that need nothing from the database.
+pub(super) fn check_log(log: &BookLog) -> Result<()> {
+    check_hash(&log.book.sha256)?;
+    check_reading_order(&log.events)?;
+    check_layout(log)
+}
+
+/// [`write_book`] inside the transaction its caller holds. The caller has checked that the foreign keys are on and
+/// that `log` passes [`check_log`].
+pub(super) fn write_log(conn: &Connection, log: &BookLog) -> Result<()> {
+    let book = &log.book;
+    let sha256 = book.sha256.as_str();
     // Before the delete below: the links are dropped because a new log's ids may mean other characters,
     // and in the same log they mean the same ones. A caller that stores every sidecar it finds, changed or
     // not, would otherwise empty haiyaku_link.
-    if is_stored(&tx, log)? {
+    if is_stored(conn, log)? {
         return Ok(());
     }
 
     // The old rows, each table before the ones it references; a new book has none. Deleting an event takes
     // its child rows by cascade.
-    tx.execute("DELETE FROM haiyaku_link WHERE later_book = ?1 OR earlier_book = ?1", [sha256])?;
+    conn.execute("DELETE FROM haiyaku_link WHERE later_book = ?1 OR earlier_book = ?1", [sha256])?;
     for table in ["haiyaku_event", "haiyaku_document", "haiyaku_entity", "haiyaku_chapter"] {
-        tx.execute(&format!("DELETE FROM {table} WHERE book = ?1"), [sha256])?;
+        conn.execute(&format!("DELETE FROM {table} WHERE book = ?1"), [sha256])?;
     }
     // Updated in place, never deleted and inserted again: the rows of haiyaku_order_book that reference the
     // book would refuse the delete, and they are the book's place in its reading orders.
-    tx.execute(
+    conn.execute(
         "INSERT INTO haiyaku_book (sha256, title, language, backend, model, prompt_version, extracted_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
          ON CONFLICT (sha256) DO UPDATE SET
@@ -72,12 +84,10 @@ pub fn write_book(conn: &mut Connection, log: &BookLog) -> Result<()> {
         params![sha256, book.title, book.language, book.backend, book.model, book.prompt_version, book.extracted_at],
     )?;
 
-    insert_chapters(&tx, sha256, &log.chapters)?;
-    insert_documents(&tx, sha256, &log.documents)?;
-    insert_entities(&tx, sha256, &log.entities)?;
-    insert_events(&tx, sha256, &log.events)?;
-    tx.commit()?;
-    Ok(())
+    insert_chapters(conn, sha256, &log.chapters)?;
+    insert_documents(conn, sha256, &log.documents)?;
+    insert_entities(conn, sha256, &log.entities)?;
+    insert_events(conn, sha256, &log.events)
 }
 
 /// The whole log of the book: its chapters by number, its documents by ordinal, its entities by id and its
@@ -192,7 +202,7 @@ pub fn read_events(conn: &Connection, sha256: &str, up_to_chapter: Option<u32>) 
 
 /// Whether the log stored for the book is `log`, through the code that reads a book back, so that this and
 /// [`read_book`] cannot come to disagree on what a stored log is.
-fn is_stored(conn: &Connection, log: &BookLog) -> Result<bool> {
+pub(super) fn is_stored(conn: &Connection, log: &BookLog) -> Result<bool> {
     let stored = match read_log(conn, &log.book.sha256) {
         Ok(stored) => stored,
         // No log, or one that cannot be read back, which the write replaces.

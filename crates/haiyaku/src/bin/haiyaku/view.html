@@ -29,7 +29,7 @@ header {
 }
 header h1 { font-size: 15px; margin: 0 8px 0 0; }
 #slider { flex: 1 1 200px; }
-#where { font-weight: 600; min-width: 14em; }
+#where { font-weight: 600; min-width: 22em; }
 #graph { width: 100%; height: 100%; display: block; }
 aside { overflow: auto; padding: 4px 14px 20px; border-left: 1px solid var(--rule); background: var(--panel); }
 @media (max-width: 760px) {
@@ -99,7 +99,16 @@ button.pick[aria-pressed="true"] { font-weight: 700; text-decoration: underline 
 'use strict';
 const DATA = JSON.parse(document.getElementById('data').textContent);
 const steps = DATA.steps;
+// A page of one book gives its steps no book and no links: every step is a chapter of its one book, and no
+// link joins two books.
+for (const step of steps) {
+  step.book ??= 0;
+  step.links ??= [];
+}
 const last = steps.length - 1;
+// The number of chapters of each book the page holds, by its index in DATA.books.
+const chaptersIn = [];
+for (const step of steps) chaptersIn[step.book] = Math.max(chaptersIn[step.book] ?? 0, step.chapter);
 const SVG = 'http://www.w3.org/2000/svg';
 const RADIUS = 7;
 // The groups of kinds, each drawn in the colour and the pattern of its g- class in the stylesheet.
@@ -215,8 +224,27 @@ function settle(step, pos, heat) {
   }
 }
 
-function chapters(first, lastSeen) {
-  return first === lastSeen ? 'chapter ' + first : 'chapters ' + first + '-' + lastSeen;
+// A chapter as show prints it: its number in the book of the step shown, and its book's title before that in
+// another book.
+function chapterName(book, chapter) {
+  return (book === steps[at].book ? '' : DATA.books[book] + ' ') + 'ch ' + chapter;
+}
+
+// The chapters a character or a fact was seen in, from `first` to `last`: in words within the book of the step
+// shown, with the title within one other book, and as two chapters across two books.
+function chapters(seen) {
+  if (seen.firstBook !== seen.lastBook) {
+    return chapterName(seen.firstBook, seen.first) + ' to ' + chapterName(seen.lastBook, seen.last);
+  }
+  if (seen.firstBook !== steps[at].book) {
+    return DATA.books[seen.firstBook] + ' ch ' + seen.first + (seen.first === seen.last ? '' : '-' + seen.last);
+  }
+  return seen.first === seen.last ? 'chapter ' + seen.first : 'chapters ' + seen.first + '-' + seen.last;
+}
+
+// Whether the step's chapter names the character.
+function inChapter(character, step) {
+  return character.lastBook === step.book && character.last === step.chapter;
 }
 
 // The id `selected` stands for in `step`: itself, the character it was merged into, or null.
@@ -244,9 +272,9 @@ function render() {
   document.getElementById('slider').value = at;
   document.getElementById('prev').disabled = at === 0;
   document.getElementById('next').disabled = at === last;
-  document.getElementById('where').textContent = at === 0
-    ? 'Before chapter 1'
-    : 'Chapter ' + at + ' of ' + last + ': ' + step.title;
+  document.getElementById('where').textContent = DATA.books[step.book] + ', ' + (at === 0
+    ? 'before chapter 1'
+    : 'chapter ' + step.chapter + ' of ' + chaptersIn[step.book] + ': ' + step.title);
   graph(step, names, id);
   panel(step, names, id);
 }
@@ -315,7 +343,7 @@ function graph(step, names, id) {
   }
   for (const character of step.characters) {
     const p = pos[character.id];
-    const here = character.last === step.chapter;
+    const here = inChapter(character, step);
     const dim = id !== null && !linked.has(character.id);
     const node = svg('g', {
       class: 'node' + (here ? ' here' : '') + (dim ? ' dim' : ''),
@@ -342,12 +370,12 @@ function factRest(fact, relation, names) {
   const ends = fact.from
     ? name(fact.from) + ' → ' + name(other)
     : name(relation.a) + ' – ' + name(relation.b);
-  return ': ' + ends + (fact.note ? ', ' + fact.note : '') + ' (' + chapters(fact.first, fact.last) + ')';
+  return ': ' + ends + (fact.note ? ', ' + fact.note : '') + ' (' + chapters(fact) + ')';
 }
 
 // The chapter and note of an overturn, in show's words.
 function overturnText(overturn) {
-  return 'overturned in ch ' + overturn.chapter + (overturn.note ? ': ' + overturn.note : '');
+  return 'overturned in ' + chapterName(overturn.book, overturn.chapter) + (overturn.note ? ': ' + overturn.note : '');
 }
 
 function factLine(fact, relation, names) {
@@ -364,7 +392,7 @@ function panel(step, names, id) {
   if (character) parts.push(...about(character, step, names));
   parts.push(html('h3', {}, 'Characters (' + step.characters.length + ')'));
   parts.push(html('ul', { class: 'cast' }, step.characters.map((c) => {
-    const here = c.last === step.chapter;
+    const here = inChapter(c, step);
     return html('li', {}, html('button', {
       type: 'button', class: 'pick', 'aria-pressed': String(c.id === id), onclick: () => pick(c.id),
     }, html('span', { 'aria-hidden': 'true' }, here ? '● ' : '○ '), c.name,
@@ -376,15 +404,26 @@ function panel(step, names, id) {
 
 function about(character, step, names) {
   const parts = [html('h2', {}, character.name)];
-  parts.push(html('p', { class: 'meta' }, character.id + ', ' + chapters(character.first, character.last)));
+  parts.push(html('p', { class: 'meta' }, character.id + ', ' + chapters(character)));
   if (character.aliases.length) parts.push(html('p', {}, 'Also: ' + character.aliases.join(', ')));
   if (character.merged.length) {
     parts.push(html('p', {}, 'Found to be the same as: ' +
       character.merged.map((other) => {
-        const name = nameBefore(other);
+        // A later book's character linked at its introduction is merged before any step shows it alone, and its
+        // link names it.
+        const name = nameBefore(other) ?? step.links.find((link) => link.later === other)?.name ?? null;
         // An id never shown under a name of its own is given once, not as "c5 (c5)".
         return name === null ? other : name + ' (' + other + ')';
       }).join(', ')));
+  }
+  // A link joins a later book's character into this one, which is always the earlier book's, so its later
+  // character is this one's own id or among those merged into it.
+  const links = step.links.filter((link) => link.later === character.id || character.merged.includes(link.later));
+  if (links.length) {
+    parts.push(html('h3', {}, 'Linked across books'));
+    parts.push(html('ul', { class: 'facts' }, links.map((link) => html('li', {},
+      (link.name ?? link.later) + ', from ' + DATA.books[link.book] + ' ch ' + link.chapter,
+      link.quote === null ? html('p', { class: 'meta' }, 'linked on the name') : html('blockquote', {}, link.quote)))));
   }
   parts.push(html('h3', {}, 'Relations'));
   const items = step.relations
@@ -465,8 +504,10 @@ document.addEventListener('keydown', (event) => {
   if (event.key === 'ArrowLeft') go(at - 1);
   if (event.key === 'ArrowRight') go(at + 1);
 });
-document.getElementById('book').textContent = DATA.title;
-document.title = DATA.title + ': the cast chapter by chapter';
+// A page of several books runs from the first of its reading order to the book shown.
+const heading = DATA.books.length > 1 ? DATA.books[0] + ' to ' + DATA.title : DATA.title;
+document.getElementById('book').textContent = heading;
+document.title = heading + ': the cast chapter by chapter';
 render();
 </script>
 </body>

@@ -46,9 +46,9 @@ pub trait Backend: std::fmt::Debug {
     /// [`BookRecord::model`](crate::log::BookRecord::model) records.
     fn model(&self) -> &str;
     /// Where the replies come from when the name and the model do not say: a server's base URL, a replay's
-    /// directory, and empty by default. A run's cache ([`extract_book`](crate::extract::extract_book)) keys a
-    /// reply by it beside the name and the model, so two servers that serve a model under one name, or two
-    /// replay directories, do not answer for each other.
+    /// directory, and empty by default. The reply cache that [`extract_book`](crate::extract::extract_book) and
+    /// [`link_order`](crate::link::link_order) share keys a reply by it beside the name and the model, so two
+    /// servers that serve a model under one name, or two replay directories, do not answer for each other.
     fn endpoint(&self) -> &str {
         ""
     }

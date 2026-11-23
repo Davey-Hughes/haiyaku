@@ -2,14 +2,14 @@
 
 mod common;
 
-use common::{db, keeper, keepers, keepers_light, keepers_links, keepers_return};
+use common::{db, keeper, keepers, keepers_light, keepers_links, keepers_logs, keepers_return};
 use haiyaku::fold::{Cast, ChapterRef, Character, EntityKey, fold_book};
 use haiyaku::log::{BookLog, Document, Entity, EntityKind, Position, RelationKind};
 use haiyaku::store::{
     Link, LinkMethod, Order, Series, finished_chapters, put_links, put_series, read_book, read_links, read_series,
     write_book,
 };
-use haiyaku::{Error, Scope, cast_at};
+use haiyaku::{Error, Scope, cast_at, fold_series};
 use rusqlite::Connection;
 
 /// Both books, their series and its links.
@@ -18,7 +18,7 @@ fn library() -> Connection {
     write_book(&mut conn, &keeper()).unwrap();
     write_book(&mut conn, &keepers_return()).unwrap();
     put_series(&mut conn, &keepers()).unwrap();
-    put_links(&mut conn, "keepers", "published", &keepers_links()).unwrap();
+    put_links(&mut conn, "keepers", "published", &keepers_links(), &keepers_logs()).unwrap();
     conn
 }
 
@@ -119,7 +119,7 @@ fn series_and_links_round_trip() {
 
     // Links come back in reading order, whatever order they were put in.
     let reversed: Vec<Link> = keepers_links().into_iter().rev().collect();
-    put_links(&mut conn, "keepers", "published", &reversed).unwrap();
+    put_links(&mut conn, "keepers", "published", &reversed, &keepers_logs()).unwrap();
     assert_eq!(read_links(&conn, "keepers", "published").unwrap(), keepers_links());
 
     not_found(read_series(&conn, "lamplighters"), "series lamplighters");
@@ -202,7 +202,7 @@ fn links_of_a_book_read_whole_are_applied() {
         chapter: 1,
         at: Position { document: 1, block: 0 },
     });
-    put_links(&mut conn, "keepers", "published", &links).unwrap();
+    put_links(&mut conn, "keepers", "published", &links, &[keeper(), keepers_return(), keepers_light()]).unwrap();
     assert_eq!(read_links(&conn, "keepers", "published").unwrap(), links);
     let (ada, pip, tom) = (key(&first, "ada"), key(&first, "pip"), key(&first, "tom"));
     let (stranger, sailor, captain) = (key(&first, "stranger"), key(&second, "sailor"), key(&third, "captain"));
@@ -292,7 +292,7 @@ fn link_against_order_is_invalid() {
     let mut links = keepers_links();
     links.truncate(1);
     links.push(backwards);
-    assert!(matches!(put_links(&mut conn, "keepers", "published", &links), Err(Error::Invalid(_))));
+    assert!(matches!(put_links(&mut conn, "keepers", "published", &links, &keepers_logs()), Err(Error::Invalid(_))));
     // The refused call changed nothing, the link before the bad one included.
     assert_eq!(read_links(&conn, "keepers", "published").unwrap(), keepers_links());
 }
@@ -302,9 +302,12 @@ fn link_to_a_book_outside_the_order_is_invalid() {
     let mut conn = library();
     let (_, second) = books();
     put_series(&mut conn, &keepers_and(&[order("solo", &[&second])])).unwrap();
-    assert!(matches!(put_links(&mut conn, "keepers", "solo", &keepers_links()), Err(Error::Invalid(_))));
+    assert!(matches!(
+        put_links(&mut conn, "keepers", "solo", &keepers_links(), &[keepers_return()]),
+        Err(Error::Invalid(_))
+    ));
     not_found(
-        put_links(&mut conn, "keepers", "chronological", &keepers_links()),
+        put_links(&mut conn, "keepers", "chronological", &keepers_links(), &keepers_logs()),
         "order chronological of series keepers",
     );
 }
@@ -324,7 +327,7 @@ fn link_at_a_document_outside_its_chapter_is_invalid() {
         let mut links = keepers_links();
         links[1].chapter = chapter;
         links[1].at.document = document;
-        let refused = put_links(&mut conn, "keepers", "published", &links);
+        let refused = put_links(&mut conn, "keepers", "published", &links, &keepers_logs());
         assert!(matches!(&refused, Err(Error::Invalid(why)) if why.ends_with(reason)), "{refused:?}");
         assert_eq!(read_links(&conn, "keepers", "published").unwrap(), keepers_links());
     }
@@ -338,14 +341,14 @@ fn link_to_an_unknown_character_is_refused() {
     // The first book has no such entity.
     let mut links = keepers_links();
     links[1].earlier.id = "harbourmaster".into();
-    let refused = put_links(&mut conn, "keepers", "published", &links);
+    let refused = put_links(&mut conn, "keepers", "published", &links, &keepers_logs());
     assert!(matches!(&refused, Err(Error::Invalid(why)) if why.ends_with(&never("harbourmaster"))), "{refused:?}");
     assert_eq!(read_links(&conn, "keepers", "published").unwrap(), keepers_links());
 
     // Nor has the second the one it is linked from.
     let mut links = keepers_links();
     links[1].later.id = "boatswain".into();
-    let refused = put_links(&mut conn, "keepers", "published", &links);
+    let refused = put_links(&mut conn, "keepers", "published", &links, &keepers_logs());
     assert!(
         matches!(&refused, Err(Error::Invalid(why)) if why.contains("has not introduced boatswain")),
         "{refused:?}"
@@ -365,7 +368,7 @@ fn link_to_a_character_the_earlier_book_never_introduces_is_invalid() {
 
     let mut links = keepers_links();
     links[1].earlier.id = "harbourmaster".into();
-    let refused = put_links(&mut conn, "keepers", "published", &links);
+    let refused = put_links(&mut conn, "keepers", "published", &links, &[first, keepers_return()]);
     let said = |why: &str| why.contains("to harbourmaster") && why.ends_with("which that book never introduces");
     assert!(matches!(&refused, Err(Error::Invalid(why)) if said(why)), "{refused:?}");
     assert_eq!(read_links(&conn, "keepers", "published").unwrap(), []);
@@ -381,13 +384,14 @@ fn link_from_a_chapter_before_the_later_character_is_introduced_is_invalid() {
     second.events[1].at.document = 2;
     write_book(&mut conn, &second).unwrap();
     put_series(&mut conn, &keepers()).unwrap();
+    let logs = [keeper(), second];
 
     // His link holds from chapter 1: the fold would try it at the end of that chapter, find no sailor, and
     // never try again.
     let mut links = keepers_links();
     links[1].chapter = 1;
     links[1].at = Position { document: 1, block: 0 };
-    let refused = put_links(&mut conn, "keepers", "published", &links);
+    let refused = put_links(&mut conn, "keepers", "published", &links, &logs);
     let said = |why: &str| why.contains("holds from chapter 1") && why.contains("has not introduced sailor");
     assert!(matches!(&refused, Err(Error::Invalid(why)) if said(why)), "{refused:?}");
     assert_eq!(read_links(&conn, "keepers", "published").unwrap(), []);
@@ -395,8 +399,97 @@ fn link_from_a_chapter_before_the_later_character_is_introduced_is_invalid() {
     // From the chapter that introduces him it is stored.
     links[1].chapter = 2;
     links[1].at.document = 2;
-    put_links(&mut conn, "keepers", "published", &links).unwrap();
+    put_links(&mut conn, "keepers", "published", &links, &logs).unwrap();
     assert_eq!(read_links(&conn, "keepers", "published").unwrap(), links);
+}
+
+#[test]
+fn links_made_against_a_log_stored_again_since_are_refused() {
+    let mut conn = db();
+    let read = [keeper(), keepers_return(), keepers_light()];
+    for log in &read {
+        write_book(&mut conn, log).unwrap();
+    }
+    let (first, second) = books();
+    let third = keepers_light().book.sha256;
+    let three = Series { orders: vec![order("published", &[&first, &second, &third])], ..keepers() };
+    put_series(&mut conn, &three).unwrap();
+    put_links(&mut conn, "keepers", "published", &keepers_links(), &read).unwrap();
+    // Made against the three logs: the third book's captain is the second's sailor.
+    let mut links = keepers_links();
+    links.push(Link {
+        later: key(&third, "captain"),
+        earlier: key(&second, "sailor"),
+        method: LinkMethod::Name,
+        chapter: 1,
+        at: Position { document: 1, block: 0 },
+    });
+
+    // The third book is extracted again while the links are made.
+    let mut again = keepers_light();
+    again.book.extracted_at = "2026-03-01T00:00:00Z".into();
+    write_book(&mut conn, &again).unwrap();
+    let replaced = |refused: &Result<(), Error>| matches!(refused, Err(Error::LogReplaced { book }) if *book == third);
+    let refused = put_links(&mut conn, "keepers", "published", &links, &read);
+    assert!(replaced(&refused), "{refused:?}");
+    // Nothing is stored, and the links between the other two books are as they were.
+    assert_eq!(read_links(&conn, "keepers", "published").unwrap(), keepers_links());
+    // A log no link names counts as well: the step that read it found none of its characters to link.
+    let refused = put_links(&mut conn, "keepers", "published", &keepers_links()[..1], &read);
+    assert!(replaced(&refused), "{refused:?}");
+    assert_eq!(read_links(&conn, "keepers", "published").unwrap(), keepers_links());
+
+    // Made against the logs stored now, they are stored.
+    put_links(&mut conn, "keepers", "published", &links, &[keeper(), keepers_return(), again]).unwrap();
+    assert_eq!(read_links(&conn, "keepers", "published").unwrap(), links);
+}
+
+#[test]
+fn links_made_over_an_order_stored_again_since_are_refused() {
+    let mut conn = db();
+    for log in [keeper(), keepers_return(), keepers_light()] {
+        write_book(&mut conn, &log).unwrap();
+    }
+    let (first, second) = books();
+    let third = keepers_light().book.sha256;
+    let stored_as = |books: &[&str]| Series { orders: vec![order("published", books)], ..keepers() };
+    put_series(&mut conn, &stored_as(&[&first, &third])).unwrap();
+    // Made over the first and the third book: the third book's captain is the first's Tom Reed.
+    let read = [keeper(), keepers_light()];
+    let links = [Link {
+        later: key(&third, "captain"),
+        earlier: key(&first, "tom"),
+        method: LinkMethod::Name,
+        chapter: 1,
+        at: Position { document: 1, block: 0 },
+    }];
+    put_links(&mut conn, "keepers", "published", &links, &read).unwrap();
+
+    // The order is stored again with the second book between the two while the links are made, so they never
+    // weighed the second book's characters.
+    put_series(&mut conn, &stored_as(&[&first, &second, &third])).unwrap();
+    let replaced = |refused: &Result<(), Error>| {
+        let named = |series: &str, order: &str| (series, order) == ("keepers", "published");
+        matches!(refused, Err(Error::OrderReplaced { series, order }) if named(series, order))
+    };
+    let refused = put_links(&mut conn, "keepers", "published", &links, &read);
+    assert!(replaced(&refused), "{refused:?}");
+    assert_eq!(read_links(&conn, "keepers", "published").unwrap(), []);
+
+    // The same books in another sequence are another order as well.
+    put_series(&mut conn, &stored_as(&[&third, &first])).unwrap();
+    let refused = put_links(&mut conn, "keepers", "published", &[], &read);
+    assert!(replaced(&refused), "{refused:?}");
+}
+
+#[test]
+fn a_link_to_a_book_whose_log_is_not_given_is_invalid() {
+    let mut conn = library();
+    let (_, second) = books();
+    let refused = put_links(&mut conn, "keepers", "published", &keepers_links()[..1], &[keeper()]);
+    let said = |why: &str| why.contains(&format!("ada of book {second}"));
+    assert!(matches!(&refused, Err(Error::Invalid(why)) if said(why)), "{refused:?}");
+    assert_eq!(read_links(&conn, "keepers", "published").unwrap(), keepers_links());
 }
 
 #[test]
@@ -408,7 +501,7 @@ fn two_links_for_one_later_character_are_invalid() {
     let mut links = keepers_links();
     links.push(twice);
 
-    let refused = put_links(&mut conn, "keepers", "published", &links);
+    let refused = put_links(&mut conn, "keepers", "published", &links, &keepers_logs());
     assert!(
         matches!(&refused, Err(Error::Invalid(why)) if why.contains(&format!("two links for ada of book {second}"))),
         "{refused:?}"
@@ -422,9 +515,9 @@ fn put_links_replaces_one_orders_links() {
     let (first, second) = books();
     put_series(&mut conn, &keepers_and(&[order("reissued", &[&first, &second])])).unwrap();
     for name in ["published", "reissued"] {
-        put_links(&mut conn, "keepers", name, &keepers_links()).unwrap();
+        put_links(&mut conn, "keepers", name, &keepers_links(), &keepers_logs()).unwrap();
     }
-    put_links(&mut conn, "keepers", "published", &keepers_links()[..1]).unwrap();
+    put_links(&mut conn, "keepers", "published", &keepers_links()[..1], &keepers_logs()).unwrap();
     assert_eq!(read_links(&conn, "keepers", "published").unwrap(), keepers_links()[..1]);
     assert_eq!(read_links(&conn, "keepers", "reissued").unwrap(), keepers_links());
 }
@@ -455,6 +548,26 @@ fn put_series_replaces_the_orders_and_drops_their_links() {
 }
 
 #[test]
+fn put_series_says_how_many_links_it_drops() {
+    let mut conn = db();
+    write_book(&mut conn, &keeper()).unwrap();
+    write_book(&mut conn, &keepers_return()).unwrap();
+    let (first, second) = books();
+    let both = keepers_and(&[order("reissued", &[&first, &second])]);
+    assert_eq!(put_series(&mut conn, &both).unwrap(), 0, "a series stored for the first time replaces none");
+    // Another series' links are not the keepers', and stay.
+    let lighthouse = Series { name: "lighthouse".into(), ..keepers() };
+    put_series(&mut conn, &lighthouse).unwrap();
+    put_links(&mut conn, "lighthouse", "published", &keepers_links(), &keepers_logs()).unwrap();
+    put_links(&mut conn, "keepers", "published", &keepers_links(), &keepers_logs()).unwrap();
+    put_links(&mut conn, "keepers", "reissued", &keepers_links()[..1], &keepers_logs()).unwrap();
+
+    assert_eq!(put_series(&mut conn, &both).unwrap(), 3, "the links of each of its orders");
+    assert_eq!(put_series(&mut conn, &both).unwrap(), 0, "the links went with the series it replaced");
+    assert_eq!(read_links(&conn, "lighthouse", "published").unwrap(), keepers_links());
+}
+
+#[test]
 fn series_without_an_order_or_with_a_book_twice_is_invalid() {
     let mut conn = library();
     let (first, second) = books();
@@ -482,7 +595,7 @@ fn series_writes_require_foreign_keys() {
     let mut conn = library();
     conn.pragma_update(None, "foreign_keys", "OFF").unwrap();
     assert!(matches!(put_series(&mut conn, &keepers()), Err(Error::ForeignKeysOff)));
-    assert!(matches!(put_links(&mut conn, "keepers", "published", &[]), Err(Error::ForeignKeysOff)));
+    assert!(matches!(put_links(&mut conn, "keepers", "published", &[], &[]), Err(Error::ForeignKeysOff)));
     assert_eq!(read_links(&conn, "keepers", "published").unwrap(), keepers_links());
 }
 
@@ -491,7 +604,7 @@ fn default_order_is_rank_zero() {
     let mut conn = library();
     let (first, second) = books();
     put_series(&mut conn, &keepers_and(&[order("solo", &[&second])])).unwrap();
-    put_links(&mut conn, "keepers", "published", &keepers_links()).unwrap();
+    put_links(&mut conn, "keepers", "published", &keepers_links(), &keepers_logs()).unwrap();
 
     let default = cast_at(&conn, &second, "back.xhtml", &in_series(None)).unwrap();
     assert_eq!(default, cast_at(&conn, &second, "back.xhtml", &in_series(Some("published"))).unwrap());
@@ -517,4 +630,58 @@ fn series_scope_needs_the_book_in_the_order() {
     );
     let elsewhere = Scope::Series { series: "lamplighters".into(), order: None };
     not_found(cast_at(&conn, &first, "c1.xhtml", &elsewhere), "series lamplighters");
+}
+
+#[test]
+fn fold_series_is_cast_at_by_chapter() {
+    let conn = library();
+    let (_, second) = books();
+    let logs = [keeper(), keepers_return()];
+    for finished in 0..=2 {
+        let document = format!("c{}.xhtml", finished + 1);
+        assert_eq!(
+            fold_series(&logs, Some(finished), &keepers_links()),
+            cast_at(&conn, &second, &document, &in_series(None)).unwrap(),
+            "{document}"
+        );
+    }
+    assert_eq!(
+        fold_series(&logs, None, &keepers_links()),
+        cast_at(&conn, &second, "back.xhtml", &in_series(None)).unwrap()
+    );
+}
+
+#[test]
+fn fold_series_of_one_book_is_fold_book() {
+    for finished in 0..=3 {
+        assert_eq!(fold_series(&[keeper()], Some(finished), &[]), fold_book(&keeper(), finished), "{finished}");
+    }
+}
+
+#[test]
+fn fold_series_counts_a_chapter_that_ends_the_spine() {
+    // The second book ends on its last chapter, so no document of it is past that chapter.
+    let mut second = keepers_return();
+    second.documents.retain(|document| document.path != "back.xhtml");
+    let mut conn = db();
+    write_book(&mut conn, &keeper()).unwrap();
+    write_book(&mut conn, &second).unwrap();
+    put_series(&mut conn, &keepers()).unwrap();
+    put_links(&mut conn, "keepers", "published", &keepers_links(), &[keeper(), second.clone()]).unwrap();
+    let (first, _) = books();
+    let (tom, sailor) = (key(&first, "tom"), key(&second.book.sha256, "sailor"));
+
+    for document in &second.documents {
+        let cast = cast_at(&conn, &second.book.sha256, &document.path, &in_series(None)).unwrap();
+        assert!(!character(&cast, &tom).merged.contains(&sailor), "{}", document.path);
+    }
+
+    let cast = fold_series(&[keeper(), second], Some(3), &keepers_links());
+    assert_eq!(keys(&cast), [&key(&first, "ada"), &key(&first, "pip"), &tom]);
+    assert_eq!(character(&cast, &tom).merged, [key(&first, "stranger"), sailor]);
+}
+
+#[test]
+fn fold_series_passes_over_links_of_books_it_is_not_given() {
+    assert_eq!(fold_series(&[keeper()], None, &keepers_links()), fold_book(&keeper(), 3));
 }

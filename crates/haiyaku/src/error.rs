@@ -24,6 +24,13 @@ pub enum Error {
     /// A file holds a different book from the one asked for. `found` is the hash of the one book the file
     /// holds, or says how many there are when that is not one: `no book`, `2 books`.
     HashMismatch { expected: String, found: String },
+    /// The database no longer holds a log that a write was made against: the book `book`, by its sha256, was
+    /// stored again after that log was read, and what was made from it need not fit the log stored now.
+    LogReplaced { book: String },
+    /// The database no longer holds the reading order a write was made over: the order `order` of the series
+    /// `series` was stored again after it was read, and lists other books or the same in another sequence, so what
+    /// was made over it may skip a book or come before one it should follow.
+    OrderReplaced { series: String, order: String },
     // Epub and Model are built only by code behind the `extract` feature, and are variants with every set
     // of features: an enum whose shape depends on features breaks a caller's `match`.
     /// A file cannot be read as an EPUB; the string says what is wrong with it, and where.
@@ -51,6 +58,10 @@ impl fmt::Display for Error {
             Self::HashMismatch { expected, found } => {
                 write!(f, "expected the book with sha256 {expected}, found {found}")
             }
+            Self::LogReplaced { book } => write!(f, "the log of book {book} was replaced after it was read"),
+            Self::OrderReplaced { series, order } => {
+                write!(f, "order {order} of series {series} was stored again with other books after it was read")
+            }
             Self::Epub(what) => write!(f, "EPUB: {what}"),
             Self::Model(what) => write!(f, "model: {what}"),
         }
@@ -67,6 +78,8 @@ impl std::error::Error for Error {
             | Self::ForeignKeysOff
             | Self::SchemaTooNew { .. }
             | Self::HashMismatch { .. }
+            | Self::LogReplaced { .. }
+            | Self::OrderReplaced { .. }
             | Self::Epub(_)
             | Self::Model(_) => None,
         }
@@ -92,13 +105,18 @@ mod tests {
     use super::*;
 
     /// One of each variant that has no cause, with the text its message has to carry.
-    fn without_a_cause() -> [(Error, Vec<&'static str>); 7] {
+    fn without_a_cause() -> [(Error, Vec<&'static str>); 9] {
         [
             (Error::NotFound("book abc".into()), vec!["book abc"]),
             (Error::Invalid("seq must run 1, 2, 3".into()), vec!["seq must run 1, 2, 3"]),
             (Error::ForeignKeysOff, vec!["foreign_keys"]),
             (Error::SchemaTooNew { found: 7, supported: 3 }, vec!["version 7", "version 3"]),
             (Error::HashMismatch { expected: "abc".into(), found: "2 books".into() }, vec!["abc", "2 books"]),
+            (Error::LogReplaced { book: "abc".into() }, vec!["abc"]),
+            (
+                Error::OrderReplaced { series: "keepers".into(), order: "published".into() },
+                vec!["keepers", "published"],
+            ),
             (Error::Epub("no table of contents".into()), vec!["no table of contents"]),
             (Error::Model("timed out after 600 s".into()), vec!["timed out after 600 s"]),
         ]

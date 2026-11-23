@@ -1,0 +1,30 @@
+You tell whether a character of a book is a character of the books before it in its series, from the names and quotes you are given, and you reply with JSON only.
+---
+The later book: The Keeper's Return
+The later character's name in chapter 3: Tom
+
+The later character's names, to the end of chapter 3:
+- the old sailor
+- Tom
+
+The later character's quotes, to the end of chapter 3:
+- At the tiller sat the old sailor, grey as the water.
+- Ada and the old sailor mended the lamp together.
+- Call me Tom, said the old sailor.
+
+The candidates, characters of the books before it in its series:
+
+e1, a character of The Lighthouse Keeper
+name: Tom Reed
+other name: the stranger
+introduced: The harbour list had one name for the evening boat: Tom Reed.
+
+Say whether the later character is one of the candidates: the same person, met again in a later book.
+
+Rules:
+- candidate: the ref of the candidate who is the same person as the later character, or null when none of them is, or when the names and quotes given here do not show it.
+- Characters of one series often share a name, as a father and a son do: a name the two share does not by itself show that they are one person.
+- Judge only from what is given here, not from what you know of these books or their series.
+- quote: words copied exactly from one of the later character's quotes above, character for character, that show the later character is the candidate you give. Never a name alone, never two quotes joined, never a word changed. An empty string when candidate is null.
+---
+{"additionalProperties":false,"properties":{"candidate":{"type":["string","null"]},"quote":{"type":"string"}},"required":["candidate","quote"],"type":"object"}

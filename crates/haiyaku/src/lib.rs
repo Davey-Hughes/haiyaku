@@ -11,9 +11,11 @@ mod error;
 pub mod extract;
 pub mod fold;
 #[cfg(feature = "extract")]
+pub mod link;
+#[cfg(feature = "extract")]
 pub mod llm;
 pub mod log;
 pub mod store;
 
-pub use cast::{Scope, cast_at};
+pub use cast::{Scope, cast_at, fold_series};
 pub use error::{Error, Result};

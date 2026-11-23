@@ -256,15 +256,17 @@ fn rewrite_replaces_the_log_drops_its_links_and_keeps_its_place() {
     let links = keepers_links();
 
     // The links name the first book as their earlier book and the second as their later book.
-    for mut rewrite in [keeper(), keepers_return()] {
-        put_links(&mut conn, "keepers", "published", &links[..1]).unwrap();
-        put_links(&mut conn, "keepers", "reissued", &links[1..]).unwrap();
+    let mut stored = [keeper(), keepers_return()];
+    for place in 0..stored.len() {
+        put_links(&mut conn, "keepers", "published", &links[..1], &stored).unwrap();
+        put_links(&mut conn, "keepers", "reissued", &links[1..], &stored).unwrap();
         assert_eq!(count(&conn, "haiyaku_link"), 2);
+        let rewrite = &mut stored[place];
         rewrite.book.title.push_str(", revised");
         rewrite.events.pop();
 
-        write_book(&mut conn, &rewrite).unwrap();
-        assert_eq!(read_book(&conn, &rewrite.book.sha256).unwrap(), rewrite);
+        write_book(&mut conn, rewrite).unwrap();
+        assert_eq!(read_book(&conn, &rewrite.book.sha256).unwrap(), *rewrite);
         assert_eq!(count(&conn, "haiyaku_link"), 0);
         assert_eq!(count(&conn, "haiyaku_order_book"), 4);
     }

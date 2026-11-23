@@ -169,11 +169,12 @@ fn totals(chapters: &[Chapter]) -> String {
     )
 }
 
-fn cost(cost_usd: Option<f64>) -> String {
+/// A cost as the run's totals write it: in dollars to the hundredth of a cent, or `cost unknown`.
+pub fn cost(cost_usd: Option<f64>) -> String {
     cost_usd.map_or_else(|| "cost unknown".to_owned(), |usd| format!("${usd:.4}"))
 }
 
 /// `count` and `noun`, plural unless `count` is 1.
-fn counted(count: usize, noun: &str) -> String {
+pub fn counted(count: usize, noun: &str) -> String {
     if count == 1 { format!("1 {noun}") } else { format!("{count} {noun}s") }
 }

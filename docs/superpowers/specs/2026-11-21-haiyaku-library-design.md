@@ -227,12 +227,20 @@ order, with the second spike's rules:
 
 1. Compare names by their labelled parts, without titles; a title's sex
    (Mr. and Mrs., 씨 and 부인) keeps Mr. Weasley apart from Mrs. Weasley.
-2. Refuse a pair whose given names differ, or whose surnames differ.
-3. Link on an equal given name and surname.
-4. Send weak matches (an alias only, a bare given name, a partial name, a
-   description) to the model with the later character's quotes and the earlier character's
-   first quote. A "same" answer counts only if its quote appears in what the
-   model was sent.
+2. Refuse a pair whose given names differ, or whose surnames differ. The
+   linking design ("The link step", step 3) also refuses a candidate
+   already linked to a relative of the later character.
+3. An equal given name and surname makes a candidate, not a link: every
+   possible match goes to the model (see [the linking
+   design](2026-11-22-haiyaku-linking-design.md), "The link step").
+4. Send every candidate the rules leave to the model. The first of the later
+   character's names that has candidates gets one call listing them all;
+   until a call links, each later name that brings a candidate not asked
+   about yet gets a call of its own, listing every candidate that name
+   brings, those an earlier call listed included. What a call sends, and
+   when its answer counts, are in the linking design ("The link step", steps
+   4 and 5). An answer that names a candidate counts only if its quote is
+   found in what the model was sent.
 
 A link is a record: the later book's id, the earlier book's id, how it was
 made (name, or model with its quote), and `at`, the block of the later book
@@ -300,11 +308,14 @@ new event type is a new child table and a new migration.
 
 The sidecar is the same schema in a file of its own: `<stem>.haiyaku.db`
 beside the EPUB, following taiyaku's sibling-file convention, holding one
-book. A series exports to its own file in the series folder; its links name
-books by SHA-256, so its books are imported first. Importing migrates the
-file to the current schema version and then copies its rows, so there is no
-second format to keep in step. A book is matched by SHA-256, never by path;
-a sidecar whose hash differs from the EPUB's is refused.
+book. A series exports to its own file beside its series file, which
+carries its books' logs with the series and its links, so nothing has to be
+imported before it (see [the linking
+design](2026-11-22-haiyaku-linking-design.md), "Export and import").
+Importing migrates the file to the current schema version and then copies
+its rows, so there is no second format to keep in step. A book is matched
+by SHA-256, never by path; a sidecar whose hash differs from the EPUB's is
+refused.
 
 On the desktop the binary keeps its own database,
 `$XDG_DATA_HOME/haiyaku/haiyaku.db` unless `--db` names another.
@@ -332,13 +343,20 @@ A replay backend returns recorded replies, so no test calls a model.
 Every command works on one database, `--db`, by default the desktop
 database above.
 
-- `haiyaku extract <book.epub> [--chapters <range>] [--backend claude]`
-  lists the table of contents, or extracts the range into the database.
-- `haiyaku series <series file>` loads or updates a series and its orders.
-- `haiyaku link <series> [--order <name>]` links the books of an order.
-- `haiyaku export <book.epub | series>` writes the sidecar.
-- `haiyaku show <book.epub | series> [--at <chapter>] [--html]` prints the
-  cast at a point, or renders it as the spike's viewer did, to check a run.
+- `haiyaku extract <book.epub> [--chapters <range>] [--backend claude]
+  [--no-cache]` lists the table of contents, or extracts the range into
+  the database.
+- `haiyaku series <series file>` stores a series and its reading orders in
+  place of the stored series of its name.
+- `haiyaku link <series file> [--order <name>] [--backend claude]
+  [--no-cache]` links the characters of each order, or of the one named,
+  across its books.
+- `haiyaku export <book.epub | series file>` writes the sidecar of a book,
+  or of a series with its books and links.
+- `haiyaku show <book.epub> [--series <series file> [--order <name>]]
+  [--at <chapter>] [--html <page>]` prints the cast at a point, alone or
+  after the books before it in a reading order, or writes a page that steps
+  through it chapter by chapter, as the spike's viewer did, to check a run.
 
 ### Tests and gates
 

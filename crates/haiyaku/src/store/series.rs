@@ -5,10 +5,10 @@ use std::collections::HashSet;
 
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
-use super::book::unknown;
+use super::book::{is_stored, unknown};
 use super::{in_snapshot, require_foreign_keys};
 use crate::fold::EntityKey;
-use crate::log::Position;
+use crate::log::{BookLog, Position};
 use crate::{Error, Result};
 
 /// Books that share characters, and the orders they can be read in.
@@ -50,7 +50,7 @@ pub enum LinkMethod {
 }
 
 /// Stores `series`, replacing the series of the same name, in one transaction: on any error the database is
-/// as it was.
+/// as it was. Returns how many links the series it replaced had, which are gone with it; 0 when none was stored.
 ///
 /// Replacing a series removes every link of every one of its orders, those of an order that comes back
 /// unchanged included: a link is only known to hold for the list of books it was made against.
@@ -61,9 +61,22 @@ pub enum LinkMethod {
 /// has no order, or two orders of one name, or an order lists a book twice; [`Error::NotFound`] naming
 /// `book <sha256>` when an order lists a book that is not stored; [`Error::Sqlite`] when a statement fails,
 /// and when `conn` is already inside a transaction.
-pub fn put_series(conn: &mut Connection, series: &Series) -> Result<()> {
+pub fn put_series(conn: &mut Connection, series: &Series) -> Result<u32> {
     // The foreign keys are what takes the old orders, their books and their links with the series' row.
     require_foreign_keys(conn)?;
+    check_series(series)?;
+    // Immediate, so that the links counted are the ones the replacement takes: in a deferred transaction another
+    // connection could store an order's links between the count and the write. Dropping the transaction on an
+    // error rolls it back.
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let gone = tx.query_row("SELECT count(*) FROM haiyaku_link WHERE series = ?1", [&series.name], |row| row.get(0))?;
+    write_series(&tx, series)?;
+    tx.commit()?;
+    Ok(gone)
+}
+
+/// The rules of [`put_series`] that need nothing from the database.
+pub(super) fn check_series(series: &Series) -> Result<()> {
     if series.orders.is_empty() {
         return Err(Error::Invalid(format!("series {} has no reading order", series.name)));
     }
@@ -80,14 +93,15 @@ pub fn put_series(conn: &mut Connection, series: &Series) -> Result<()> {
             )));
         }
     }
-
-    // Dropping the transaction on an error rolls it back.
-    let tx = conn.transaction()?;
-    tx.execute("DELETE FROM haiyaku_series WHERE name = ?1", [&series.name])?;
-    tx.execute("INSERT INTO haiyaku_series (name, title) VALUES (?1, ?2)", [&series.name, &series.title])?;
-    insert_orders(&tx, series)?;
-    tx.commit()?;
     Ok(())
+}
+
+/// [`put_series`] inside the transaction its caller holds. The caller has checked that the foreign keys are on and
+/// that `series` passes [`check_series`].
+pub(super) fn write_series(conn: &Connection, series: &Series) -> Result<()> {
+    conn.execute("DELETE FROM haiyaku_series WHERE name = ?1", [&series.name])?;
+    conn.execute("INSERT INTO haiyaku_series (name, title) VALUES (?1, ?2)", [&series.name, &series.title])?;
+    insert_orders(conn, series)
 }
 
 /// The series as [`put_series`] stored it, its orders by rank.
@@ -124,20 +138,77 @@ fn series_in_snapshot(conn: &Connection, name: &str) -> Result<Series> {
 /// Stores `links` as the links of one reading order, replacing those it had, in one transaction: on any error
 /// the database is as it was.
 ///
+/// `logs` are the logs the links were made against, one for each book of the order, in its sequence. Nothing is
+/// stored unless the database still holds each of them, as [`write_book`](super::write_book) would find it holds a
+/// log it is given, and the order still lists their books, in that sequence: a link names characters by ids, and a
+/// log stored since may give those ids to other characters; and links made over other books may skip a book whose
+/// characters they were never weighed against, or join a character to one of a book that now comes after it.
+///
 /// # Errors
 ///
-/// [`Error::ForeignKeysOff`] when `PRAGMA foreign_keys` is off on `conn`; [`Error::NotFound`] naming
-/// `order <order> of series <series>` when no such order is stored; [`Error::Invalid`] when two of the links
-/// are for the same later character, when a link's later book does not come after its earlier book in the
-/// order, which covers a book the order does not hold, and when a link's `at` names a document the later book
-/// does not have or one that is not in the link's `chapter`, when the later book has not introduced the later
-/// character by the end of that chapter, and when the earlier book never introduces the earlier one, which
-/// covers an entity its book does not have; [`Error::Sqlite`] when the schema refuses a row, and when `conn`
-/// is already inside a transaction.
-pub fn put_links(conn: &mut Connection, series: &str, order: &str, links: &[Link]) -> Result<()> {
-    // The checks below refuse a link to a book, a document or an entity that is not there. The foreign keys
-    // stand behind them: with the keys on, a case the checks miss is an error and not a dangling link.
+/// [`Error::ForeignKeysOff`] when `PRAGMA foreign_keys` is off on `conn`; [`Error::LogReplaced`] naming the
+/// first of `logs` the database holds another log of, or none; [`Error::NotFound`] naming
+/// `order <order> of series <series>` when no such order is stored; [`Error::OrderReplaced`] when the order
+/// lists other books than `logs` are the logs of, or the same in another sequence; [`Error::Invalid`] when a
+/// link names a book none of `logs` is the log of, when two of the links are for the same later character, when a
+/// link's later book does not come after its earlier book in the order, which covers a book the order does not
+/// hold, and when a link's `at` names a document the later book does not have or one that is not in the link's
+/// `chapter`, when the later book has not introduced the later character by the end of that chapter, and when the
+/// earlier book never introduces the earlier one, which covers an entity its book does not have; [`Error::Sqlite`]
+/// when the schema refuses a row, and when `conn` is already inside a transaction.
+pub fn put_links(conn: &mut Connection, series: &str, order: &str, links: &[Link], logs: &[BookLog]) -> Result<()> {
+    // The checks of each link refuse a link to a book, a document or an entity that is not there. The foreign
+    // keys stand behind them: with the keys on, a case the checks miss is an error and not a dangling link.
     require_foreign_keys(conn)?;
+    check_made_against(links, logs)?;
+    check_links(series, order, links)?;
+    // Immediate, so that the order and the logs the links are checked against are the ones they are stored with:
+    // a deferred transaction would let another connection replace the series or store a book again between the
+    // check and the insert.
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    // Before the checks of each link, which would otherwise weigh the ids against a log they were not made from, and
+    // the books' places against an order the links were not made over.
+    require_stored(&tx, logs)?;
+    require_made_over(&tx, series, order, logs)?;
+    write_links(&tx, series, order, links)?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// Refuses a link that names a book none of `logs` is the log of: nothing would say which log its ids are from.
+fn check_made_against(links: &[Link], logs: &[BookLog]) -> Result<()> {
+    let given = |key: &&EntityKey| logs.iter().any(|log| log.book.sha256 == key.book);
+    match links.iter().flat_map(|link| [&link.later, &link.earlier]).find(|key| !given(key)) {
+        Some(key) => Err(Error::Invalid(format!(
+            "a link names {} of book {}, and none of the logs it was made against is that book's",
+            key.id, key.book
+        ))),
+        None => Ok(()),
+    }
+}
+
+/// Refuses unless the database holds each of `logs`.
+fn require_stored(conn: &Connection, logs: &[BookLog]) -> Result<()> {
+    for log in logs {
+        if !is_stored(conn, log)? {
+            return Err(Error::LogReplaced { book: log.book.sha256.clone() });
+        }
+    }
+    Ok(())
+}
+
+/// Refuses unless the order is stored and lists the books of `logs`, in their sequence.
+fn require_made_over(conn: &Connection, series: &str, order: &str, logs: &[BookLog]) -> Result<()> {
+    require_order(conn, series, order)?;
+    if books_in(conn, series, order)?.iter().eq(logs.iter().map(|log| &log.book.sha256)) {
+        Ok(())
+    } else {
+        Err(Error::OrderReplaced { series: series.to_owned(), order: order.to_owned() })
+    }
+}
+
+/// The rules of [`put_links`] that need nothing from the database.
+pub(super) fn check_links(series: &str, order: &str, links: &[Link]) -> Result<()> {
     // The schema would refuse the second as well, with an error that names its columns and not the character.
     let mut linked = HashSet::new();
     if let Some(Link { later, .. }) = links.iter().find(|link| !linked.insert(&link.later)) {
@@ -146,14 +217,18 @@ pub fn put_links(conn: &mut Connection, series: &str, order: &str, links: &[Link
             later.id, later.book
         )));
     }
-    // Immediate, so that the order the links are checked against is the order they are stored under: a
-    // deferred transaction would let another connection replace the series between the check and the insert.
-    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    require_order(&tx, series, order)?;
-    let books = books_in(&tx, series, order)?;
+    Ok(())
+}
+
+/// [`put_links`] inside the transaction its caller holds. The caller has checked that the foreign keys are on and
+/// that `links` pass [`check_links`]; each link is checked against the database here, in the transaction that
+/// stores it.
+pub(super) fn write_links(conn: &Connection, series: &str, order: &str, links: &[Link]) -> Result<()> {
+    require_order(conn, series, order)?;
+    let books = books_in(conn, series, order)?;
     let place = |book: &str| books.iter().position(|listed| listed == book);
-    let mut chapter_of = tx.prepare("SELECT chapter FROM haiyaku_document WHERE book = ?1 AND ordinal = ?2")?;
-    let mut introduced = tx.prepare(
+    let mut chapter_of = conn.prepare("SELECT chapter FROM haiyaku_document WHERE book = ?1 AND ordinal = ?2")?;
+    let mut introduced = conn.prepare(
         "SELECT EXISTS (
             SELECT 1 FROM haiyaku_event e JOIN haiyaku_name n ON n.book = e.book AND n.seq = e.seq
             WHERE e.book = ?1 AND n.entity = ?2 AND e.type = 'introduced' AND (?3 IS NULL OR e.chapter <= ?3))",
@@ -200,12 +275,8 @@ pub fn put_links(conn: &mut Connection, series: &str, order: &str, links: &[Link
             )));
         }
     }
-    drop(introduced);
-    drop(chapter_of);
-    tx.execute("DELETE FROM haiyaku_link WHERE series = ?1 AND order_name = ?2", [series, order])?;
-    insert_links(&tx, series, order, links)?;
-    tx.commit()?;
-    Ok(())
+    conn.execute("DELETE FROM haiyaku_link WHERE series = ?1 AND order_name = ?2", [series, order])?;
+    insert_links(conn, series, order, links)
 }
 
 /// The links of one reading order, in the order a reader comes to them: by the later book's place in the

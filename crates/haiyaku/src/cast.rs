@@ -1,9 +1,11 @@
 //! The cast at a reader's position: the fold of what the database holds for the chapters the reader has
-//! finished, in the book alone or with the books before it in a reading order of its series.
+//! finished, in the book alone or with the books before it in a reading order of its series. [`fold_series`]
+//! folds a series by chapter number instead, over logs and links passed in.
 
 use rusqlite::Connection;
 
 use crate::fold::{Cast, Folder};
+use crate::log::{BookLog, Event};
 use crate::store::{Link, finished_chapters, in_snapshot, read_events, read_links, read_series};
 use crate::{Error, Result};
 
@@ -75,18 +77,47 @@ fn cast_in_snapshot(conn: &Connection, book: &str, document: &str, scope: &Scope
     Ok(folder.finish())
 }
 
-/// Folds in the next book of the reading: its chapters up to `up_to`, or all of them for `None`, and those
-/// of `links` that join one of its characters to an earlier book's from a chapter among them.
+/// Folds in the next book of the reading from the database: see [`fold_next`].
 fn fold_in(folder: &mut Folder, conn: &Connection, book: &str, up_to: Option<u32>, links: &[Link]) -> Result<()> {
+    fold_next(folder, book, &read_events(conn, book, up_to)?, up_to, links);
+    Ok(())
+}
+
+/// The cast of a reader who has read every log but the last whole and the last to the end of chapter `finished`
+/// (whole for `None`), in that order, with the two characters of each link shown as one once its chapter is read.
+///
+/// A link whose later book is not among `logs` does nothing, nor does one from a chapter of the last log past
+/// `finished`. Where [`cast_at`] counts a chapter read only at a document past it, this takes the chapter number,
+/// so a chapter that ends its book's spine can be read too.
+///
+/// Each log's events have to be in reading order, their chapters never going back, as [`write_book`] requires of
+/// a log it stores and [`read_book`] returns them: a link is applied before the first event of a chapter past its
+/// own, so an event of an earlier chapter that came after that one would be folded in with the link already
+/// applied.
+///
+/// [`write_book`]: crate::store::write_book
+/// [`read_book`]: crate::store::read_book
+pub fn fold_series(logs: &[BookLog], finished: Option<u32>, links: &[Link]) -> Cast {
+    let mut folder = Folder::new();
+    if let Some((last, earlier)) = logs.split_last() {
+        for log in earlier {
+            fold_next(&mut folder, &log.book.sha256, &log.events, None, links);
+        }
+        fold_next(&mut folder, &last.book.sha256, &last.events, finished, links);
+    }
+    folder.finish()
+}
+
+/// Folds in the next book of the reading: those of `events` in its chapters up to `up_to`, or all of them for
+/// `None`, and those of `links` that join one of its characters to an earlier book's from a chapter among them.
+fn fold_next(folder: &mut Folder, book: &str, events: &[Event], up_to: Option<u32>, links: &[Link]) {
     folder.start_book(book);
-    let mut due: Vec<&Link> = links
-        .iter()
-        .filter(|link| link.later.book == book && up_to.is_none_or(|finished| link.chapter <= finished))
-        .collect();
+    let is_read = |chapter: u32| up_to.is_none_or(|finished| chapter <= finished);
+    let mut due: Vec<&Link> = links.iter().filter(|link| link.later.book == book && is_read(link.chapter)).collect();
     due.sort_by_key(|link| link.chapter);
     let mut due = due.into_iter().peekable();
 
-    for event in read_events(conn, book, up_to)? {
+    for event in events.iter().filter(|event| is_read(event.chapter)) {
         // A link is applied once its whole chapter is in, not at its block: a reader's position is a
         // finished chapter, so no cast is asked for between the two. By then the later character has been
         // introduced, which the merge needs, or it does nothing. The merge moves what the chapter said of
@@ -95,10 +126,9 @@ fn fold_in(folder: &mut Folder, conn: &Connection, book: &str, up_to: Option<u32
         while let Some(link) = due.next_if(|link| link.chapter < event.chapter) {
             folder.merge(&link.earlier, &link.later);
         }
-        folder.apply(&event);
+        folder.apply(event);
     }
     for link in due {
         folder.merge(&link.earlier, &link.later);
     }
-    Ok(())
 }

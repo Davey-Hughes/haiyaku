@@ -1,5 +1,6 @@
 //! The database schema and its migrations; a book's log, and a series with its reading orders and links,
-//! written to it and read back; and the sidecar file that carries a book's log to another database.
+//! written to it and read back; and the sidecar files that carry a book's log, or a series with its books and
+//! links, to another database.
 
 mod book;
 mod migrate;
@@ -11,7 +12,7 @@ use rusqlite::{Connection, Transaction, TransactionBehavior};
 pub use book::{read_book, read_events, write_book};
 pub use migrate::{SCHEMA_VERSION, migrate, schema_version};
 pub use series::{Link, LinkMethod, Order, Series, finished_chapters, put_links, put_series, read_links, read_series};
-pub use sidecar::{export_book, import_book, sha256_file};
+pub use sidecar::{export_book, export_series, import_book, import_series, sha256_file};
 // Extraction's reply cache spells its keys and replaces its files with these, so the crate has one way to do
 // each. Behind the feature, as the cache is: without it nothing outside the sidecar uses them.
 #[cfg(feature = "extract")]
