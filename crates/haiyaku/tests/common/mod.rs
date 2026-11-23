@@ -434,6 +434,11 @@ fn introduced(entity: &str, name: Name) -> EventBody {
     EventBody::Introduced { entity: entity.into(), name }
 }
 
+/// The texts of `names`, in their order: what a test of which names a character carries compares.
+pub fn texts(names: &[Name]) -> Vec<&str> {
+    names.iter().map(|name| name.text.as_str()).collect()
+}
+
 fn relation(from: &str, to: &str, kind: RelationKind, note: &str) -> EventBody {
     EventBody::Relation { from: from.into(), to: to.into(), kind, note: note.into() }
 }

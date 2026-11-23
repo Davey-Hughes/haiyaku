@@ -2,9 +2,9 @@
 
 mod common;
 
-use common::{keeper, keepers_light, keepers_return};
-use haiyaku::fold::{Cast, ChapterRef, Character, EntityKey, Fact, Folder, Overturn, Relation, fold_book};
-use haiyaku::log::{BookLog, Event, EventBody, Name, Position, RelationKind};
+use common::{keeper, keepers_light, keepers_return, texts};
+use haiyaku::fold::{Cast, ChapterRef, Character, EntityKey, Fact, Folder, Relation, fold_book};
+use haiyaku::log::{BookLog, Event, EventBody, Name, Position, RelationKind, Sex};
 
 fn key(log: &BookLog, id: &str) -> EntityKey {
     EntityKey { book: log.book.sha256.clone(), id: id.into() }
@@ -107,6 +107,30 @@ fn spans(cast: &Cast, a: &EntityKey, b: &EntityKey) -> Vec<(RelationKind, Chapte
     relation(cast, a, b).facts.iter().map(span).collect()
 }
 
+/// A fact's fields in the order `Fact` declares them, its overturn's as a tuple of their own.
+type Fields =
+    (RelationKind, Option<EntityKey>, String, String, ChapterRef, ChapterRef, Option<(ChapterRef, String, String)>);
+
+/// Each fact of the pair as its [`Fields`].
+fn facts(cast: &Cast, a: &EntityKey, b: &EntityKey) -> Vec<Fields> {
+    let fields = |fact: &Fact| {
+        let overturned = fact
+            .overturned
+            .as_ref()
+            .map(|overturn| (overturn.at.clone(), overturn.note.clone(), overturn.quote.clone()));
+        (
+            fact.kind,
+            fact.from.clone(),
+            fact.note.clone(),
+            fact.quote.clone(),
+            fact.first.clone(),
+            fact.last.clone(),
+            overturned,
+        )
+    };
+    relation(cast, a, b).facts.iter().map(fields).collect()
+}
+
 #[test]
 fn nothing_before_chapter_one() {
     let cast = fold_book(&keeper(), 0);
@@ -120,12 +144,12 @@ fn description_until_named() {
     let ada = key(&k, "ada");
 
     let cast = fold_book(&k, 1);
-    assert_eq!(character(&cast, &ada).name, "the keeper");
+    assert_eq!(character(&cast, &ada).name.text, "the keeper");
     assert!(character(&cast, &ada).aliases.is_empty());
 
     let cast = fold_book(&k, 2);
-    assert_eq!(character(&cast, &ada).name, "Ada Marsh");
-    assert_eq!(character(&cast, &ada).aliases, ["the keeper"]);
+    assert_eq!(character(&cast, &ada).name.text, "Ada Marsh");
+    assert_eq!(texts(&character(&cast, &ada).aliases), ["the keeper"]);
 }
 
 #[test]
@@ -134,16 +158,16 @@ fn owns_is_directed() {
     let (ada, pip) = (key(&k, "ada"), key(&k, "pip"));
     let cast = fold_book(&k, 1);
     assert_eq!(
-        relation(&cast, &ada, &pip).facts,
-        [Fact {
-            kind: RelationKind::Owns,
-            from: Some(ada.clone()),
-            note: "her gull".into(),
-            quote: "The keeper fed Pip, her gull, from her own plate.".into(),
-            first: chapter(&k, 1),
-            last: chapter(&k, 1),
-            overturned: None,
-        }]
+        facts(&cast, &ada, &pip),
+        [(
+            RelationKind::Owns,
+            Some(ada.clone()),
+            "her gull".into(),
+            "The keeper fed Pip, her gull, from her own plate.".into(),
+            chapter(&k, 1),
+            chapter(&k, 1),
+            None,
+        )]
     );
 }
 
@@ -152,7 +176,7 @@ fn stranger_separate_until_revealed() {
     let k = keeper();
     let cast = fold_book(&k, 2);
     assert_eq!(ids(&cast), ["ada", "pip", "stranger"]);
-    assert_eq!(character(&cast, &key(&k, "stranger")).name, "the stranger");
+    assert_eq!(character(&cast, &key(&k, "stranger")).name.text, "the stranger");
 
     let facts = &relation(&cast, &key(&k, "ada"), &key(&k, "stranger")).facts;
     assert_eq!(facts.len(), 1);
@@ -167,29 +191,25 @@ fn same_as_merges() {
     let (ada, tom) = (key(&k, "ada"), key(&k, "tom"));
     let cast = fold_book(&k, 3);
     assert_eq!(ids(&cast), ["ada", "pip", "tom"]);
-    assert_eq!(
-        *character(&cast, &tom),
-        Character {
-            key: tom.clone(),
-            name: "Tom Reed".into(),
-            aliases: vec!["the stranger".into()],
-            first: chapter(&k, 2),
-            last: chapter(&k, 3),
-            merged: vec![key(&k, "stranger")],
-        }
-    );
+    let tom_reed = character(&cast, &tom);
+    assert_eq!(tom_reed.key, tom);
+    assert_eq!(tom_reed.name.text, "Tom Reed");
+    assert_eq!(texts(&tom_reed.aliases), ["the stranger"]);
+    assert_eq!(tom_reed.first, chapter(&k, 2));
+    assert_eq!(tom_reed.last, chapter(&k, 3));
+    assert_eq!(tom_reed.merged, [key(&k, "stranger")]);
 
     assert_eq!(
-        relation(&cast, &ada, &tom).facts,
-        [Fact {
-            kind: RelationKind::Acquaintance,
-            from: None,
-            note: "met on the jetty".into(),
-            quote: "Ada nodded to the stranger, and he nodded back.".into(),
-            first: chapter(&k, 2),
-            last: chapter(&k, 3),
-            overturned: None,
-        }]
+        facts(&cast, &ada, &tom),
+        [(
+            RelationKind::Acquaintance,
+            None,
+            "met on the jetty".into(),
+            "Ada nodded to the stranger, and he nodded back.".into(),
+            chapter(&k, 2),
+            chapter(&k, 3),
+            None,
+        )]
     );
     assert_eq!(cast.relations.len(), 2);
 }
@@ -199,8 +219,18 @@ fn alias_does_not_rename() {
     let k = keeper();
     let cast = fold_book(&k, 3);
     let ada = character(&cast, &key(&k, "ada"));
-    assert_eq!(ada.name, "Ada Marsh");
-    assert_eq!(ada.aliases, ["the keeper", "Mrs. Marsh"]);
+    assert_eq!(ada.name.text, "Ada Marsh");
+    assert_eq!(texts(&ada.aliases), ["the keeper", "Mrs. Marsh"]);
+}
+
+#[test]
+fn the_shown_name_keeps_its_labels() {
+    let k = keeper();
+    let ada = key(&k, "ada");
+    assert_eq!(character(&fold_book(&k, 2), &ada).name, proper("Ada Marsh", Some("Ada"), Some("Marsh")));
+    let mrs_marsh =
+        Name { title: Some("Mrs.".into()), title_sex: Some(Sex::Female), ..proper("Mrs. Marsh", None, Some("Marsh")) };
+    assert_eq!(character(&fold_book(&k, 3), &ada).aliases, [described("the keeper"), mrs_marsh]);
 }
 
 #[test]
@@ -211,8 +241,8 @@ fn a_name_of_equal_rank_does_not_replace_the_first() {
     ]);
     let cast = fold_book(&log, 2);
     let ada = character(&cast, &key(&log, "ada"));
-    assert_eq!(ada.name, "the keeper");
-    assert_eq!(ada.aliases, ["the lamp woman"]);
+    assert_eq!(ada.name.text, "the keeper");
+    assert_eq!(texts(&ada.aliases), ["the lamp woman"]);
 }
 
 #[test]
@@ -274,26 +304,26 @@ fn a_merge_keeps_the_earlier_statement_of_a_fact() {
     ]);
     let cast = fold_book(&log, 3);
     assert_eq!(
-        relation(&cast, &key(&log, "ada"), &key(&log, "tom")).facts,
+        facts(&cast, &key(&log, "ada"), &key(&log, "tom")),
         [
-            Fact {
-                kind: RelationKind::Acquaintance,
-                from: None,
-                note: "met on the jetty".into(),
-                quote: "quote 3".into(),
-                first: chapter(&log, 1),
-                last: chapter(&log, 2),
-                overturned: None,
-            },
-            Fact {
-                kind: RelationKind::Ally,
-                from: None,
-                note: "mend the lamp together".into(),
-                quote: "quote 5".into(),
-                first: chapter(&log, 2),
-                last: chapter(&log, 2),
-                overturned: None,
-            },
+            (
+                RelationKind::Acquaintance,
+                None,
+                "met on the jetty".into(),
+                "quote 3".into(),
+                chapter(&log, 1),
+                chapter(&log, 2),
+                None,
+            ),
+            (
+                RelationKind::Ally,
+                None,
+                "mend the lamp together".into(),
+                "quote 5".into(),
+                chapter(&log, 2),
+                chapter(&log, 2),
+                None,
+            ),
         ]
     );
 }
@@ -339,8 +369,8 @@ fn an_id_merged_twice_over_reaches_the_last_survivor() {
     // Tom sorts by the chapter the reader first met him in, as the figure.
     assert_eq!(ids(&cast), ["ada", "tom"]);
     let folded = character(&cast, &tom);
-    assert_eq!(folded.name, "the boatman");
-    assert_eq!(folded.aliases, ["the figure", "the stranger", "Old Tom"]);
+    assert_eq!(folded.name.text, "the boatman");
+    assert_eq!(texts(&folded.aliases), ["the figure", "the stranger", "Old Tom"]);
     assert_eq!(folded.merged, [key(&log, "figure"), key(&log, "stranger")]);
     assert_eq!(folded.first, chapter(&log, 1));
     assert_eq!(relation(&cast, &ada, &tom).facts[0].from, Some(tom.clone()));
@@ -369,13 +399,45 @@ fn aliases_are_in_the_order_first_seen_whenever_the_merge_comes() {
             }
         }
         let cast = folder.finish();
-        character(&cast, &tom).aliases.clone()
+        character(&cast, &tom).aliases.iter().map(|alias| alias.text.clone()).collect::<Vec<_>>()
     };
 
     // The stranger's names were on the page before any of Tom's, and "Old Tom" was the stranger's first.
     let first_seen = ["the stranger", "Old Tom", "the boatman", "the ferryman"];
     assert_eq!(aliases_merging_after(3), first_seen);
     assert_eq!(aliases_merging_after(6), first_seen);
+}
+
+#[test]
+fn of_one_text_the_first_labelled_name_is_kept_whenever_the_merge_comes() {
+    let alias = |entity: &str, name: Name| EventBody::Alias { entity: entity.into(), name };
+    let mrs_marsh =
+        Name { title: Some("Mrs.".into()), title_sex: Some(Sex::Female), ..proper("Mrs. Marsh", None, Some("Marsh")) };
+    let log = keeper_with(vec![
+        (1, introduced("ada", "the keeper")),
+        (1, alias("ada", described("Marsh"))),
+        (2, EventBody::Introduced { entity: "widow".into(), name: mrs_marsh.clone() }),
+        (2, alias("widow", proper("Marsh", None, Some("Marsh")))),
+        (3, same_as("ada", "widow")),
+        (3, alias("ada", proper("Marsh", Some("Marsh"), None))),
+    ]);
+    let (ada, widow) = (key(&log, "ada"), key(&log, "widow"));
+    // Merged after every other event, Ada already holds her own labelled "Marsh" when the widow's earlier one
+    // arrives; merged by the same-as, she holds the widow's when her own arrives.
+    let merged_last = {
+        let mut folder = Folder::new();
+        folder.start_book(&log.book.sha256);
+        let unmerged = log.events.iter().filter(|event| !matches!(event.body, EventBody::SameAs { .. }));
+        unmerged.for_each(|event| folder.apply(event));
+        folder.merge(&ada, &widow);
+        folder.finish()
+    };
+
+    for cast in [fold_book(&log, 3), merged_last] {
+        let folded = character(&cast, &ada);
+        assert_eq!(folded.name, mrs_marsh);
+        assert_eq!(folded.aliases, [described("the keeper"), proper("Marsh", None, Some("Marsh"))]);
+    }
 }
 
 #[test]
@@ -433,20 +495,16 @@ fn a_link_merges_across_books() {
 
     let (ada, tom) = (key(&k, "ada"), key(&k, "tom"));
     assert_eq!(ids(&cast), ["ada", "pip", "tom"]);
-    assert_eq!(
-        *character(&cast, &ada),
-        Character {
-            key: ada.clone(),
-            name: "Ada Marsh".into(),
-            aliases: vec!["the keeper".into(), "Mrs. Marsh".into(), "Ada".into()],
-            first: chapter(&k, 1),
-            last: chapter(&r, 2),
-            merged: vec![key(&r, "ada")],
-        }
-    );
+    let ada_marsh = character(&cast, &ada);
+    assert_eq!(ada_marsh.key, ada);
+    assert_eq!(ada_marsh.name.text, "Ada Marsh");
+    assert_eq!(texts(&ada_marsh.aliases), ["the keeper", "Mrs. Marsh", "Ada"]);
+    assert_eq!(ada_marsh.first, chapter(&k, 1));
+    assert_eq!(ada_marsh.last, chapter(&r, 2));
+    assert_eq!(ada_marsh.merged, [key(&r, "ada")]);
     let folded = character(&cast, &tom);
-    assert_eq!(folded.name, "Tom Reed");
-    assert_eq!(folded.aliases, ["the stranger", "the old sailor", "Tom"]);
+    assert_eq!(folded.name.text, "Tom Reed");
+    assert_eq!(texts(&folded.aliases), ["the stranger", "the old sailor", "Tom"]);
     assert_eq!(folded.merged, [key(&k, "stranger"), key(&r, "sailor")]);
     assert_eq!(folded.last, chapter(&r, 3));
 
@@ -474,8 +532,8 @@ fn a_same_as_keeps_the_earlier_books_character() {
         let keys: Vec<_> = cast.characters.iter().map(|character| &character.key).collect();
         assert_eq!(keys, [&key(&k, "ada"), &key(&k, "pip"), &key(&k, "tom")], "{entity} is {other}");
         let tom = character(&cast, &key(&k, "tom"));
-        assert_eq!(tom.name, "Tom Reed");
-        assert_eq!(tom.aliases, ["the stranger", "the old sailor", "the captain"]);
+        assert_eq!(tom.name.text, "Tom Reed");
+        assert_eq!(texts(&tom.aliases), ["the stranger", "the old sailor", "the captain"]);
         assert_eq!(tom.merged, [key(&k, "stranger"), key(&r, "sailor"), key(&r, "captain")]);
         assert_eq!(tom.last, chapter(&r, 3));
     }
@@ -500,8 +558,8 @@ fn a_fuller_name_survives_a_link_whichever_chapter_gives_it() {
 
         assert_eq!(cast.characters.len(), 1);
         let stranger = character(&cast, &key(&k, "stranger"));
-        assert_eq!(stranger.name, "Tom Reed", "named in chapter {named_in}");
-        assert_eq!(stranger.aliases, ["the stranger", "the old sailor"], "named in chapter {named_in}");
+        assert_eq!(stranger.name.text, "Tom Reed", "named in chapter {named_in}");
+        assert_eq!(texts(&stranger.aliases), ["the stranger", "the old sailor"], "named in chapter {named_in}");
     }
 }
 
@@ -516,7 +574,7 @@ fn a_survivor_takes_a_merged_characters_name_only_when_it_is_fuller() {
         let log = keeper_with(vec![(1, merged), (2, survivor.clone()), (3, same_as("tom", "stranger"))]);
         let cast = fold_book(&log, 3);
         let tom = character(&cast, &key(&log, "tom"));
-        (tom.name.clone(), tom.aliases.clone())
+        (tom.name.text.clone(), tom.aliases.iter().map(|alias| alias.text.clone()).collect::<Vec<_>>())
     };
 
     assert_eq!(
@@ -570,8 +628,8 @@ fn a_link_keeps_the_earliest_books_character_when_its_later_side_already_stands_
     let keys: Vec<_> = cast.characters.iter().map(|character| &character.key).collect();
     assert_eq!(keys, [&key(first, "ada"), &key(first, "pip"), &tom]);
     let tom_reed = character(&cast, &tom);
-    assert_eq!(tom_reed.name, "Tom Reed");
-    assert_eq!(tom_reed.aliases, ["the stranger", "the old sailor", "the captain", "the mate"]);
+    assert_eq!(tom_reed.name.text, "Tom Reed");
+    assert_eq!(texts(&tom_reed.aliases), ["the stranger", "the old sailor", "the captain", "the mate"]);
     assert_eq!(tom_reed.merged, [key(first, "stranger"), captain, mate, sailor]);
 }
 
@@ -593,24 +651,22 @@ fn overturn_marks_the_fact_stated_before_it() {
         (3, overturned(RelationKind::Enemy, "tom", "ada", "the quarrel was staged for the harbourmaster")),
     ]);
     let (ada, tom) = (key(&log, "ada"), key(&log, "tom"));
-    let fact = |overturned| Fact {
-        kind: RelationKind::Enemy,
-        from: None,
-        note: "quarrel over the light".into(),
-        quote: "quote 3".into(),
-        first: chapter(&log, 1),
-        last: chapter(&log, 1),
-        overturned,
+    let fact = |overturned| -> Fields {
+        (
+            RelationKind::Enemy,
+            None,
+            "quarrel over the light".into(),
+            "quote 3".into(),
+            chapter(&log, 1),
+            chapter(&log, 1),
+            overturned,
+        )
     };
-    let overturn = Overturn {
-        at: chapter(&log, 3),
-        note: "the quarrel was staged for the harbourmaster".into(),
-        quote: "quote 4".into(),
-    };
+    let overturn = (chapter(&log, 3), "the quarrel was staged for the harbourmaster".into(), "quote 4".into());
 
-    assert_eq!(relation(&fold_book(&log, 3), &ada, &tom).facts, [fact(Some(overturn))]);
+    assert_eq!(facts(&fold_book(&log, 3), &ada, &tom), [fact(Some(overturn))]);
     // Before the overturning chapter the fact stands.
-    assert_eq!(relation(&fold_book(&log, 2), &ada, &tom).facts, [fact(None)]);
+    assert_eq!(facts(&fold_book(&log, 2), &ada, &tom), [fact(None)]);
 }
 
 #[test]

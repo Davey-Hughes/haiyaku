@@ -6,9 +6,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde_json::{Value, json};
 
 use super::roster::{Roster, fact};
-use super::text::{QuoteError, locate_name, locate_quote, reduce};
+use super::text::{QuoteError, locate_name, locate_quote};
 use crate::book::ChapterText;
 use crate::log::{Event, EventBody, Name, Position, RelationKind, Sex};
+use crate::words::reduce;
 
 /// The JSON schema of a reply, every field required, no extra properties.
 pub fn schema() -> Value {

@@ -2,12 +2,12 @@
 
 mod common;
 
-use common::{db, keeper, keepers, keepers_light, keepers_links, keepers_logs, keepers_return};
+use common::{db, keeper, keepers, keepers_light, keepers_links, keepers_logs, keepers_return, texts};
 use haiyaku::fold::{Cast, ChapterRef, Character, EntityKey, fold_book};
 use haiyaku::log::{BookLog, Document, Entity, EntityKind, Position, RelationKind};
 use haiyaku::store::{
-    Link, LinkMethod, Order, Series, finished_chapters, put_links, put_series, read_book, read_links, read_series,
-    write_book,
+    Holding, Link, LinkMethod, Order, Series, finished_chapters, put_links, put_series, read_book, read_links,
+    read_series, series_holding, write_book,
 };
 use haiyaku::{Error, Scope, cast_at, fold_series};
 use rusqlite::Connection;
@@ -112,6 +112,50 @@ fn unknown_book_is_not_found() {
 }
 
 #[test]
+fn series_holding_lists_orders_by_rank() {
+    let mut conn = db();
+    write_book(&mut conn, &keeper()).unwrap();
+    write_book(&mut conn, &keepers_return()).unwrap();
+    let (first, second) = books();
+    put_series(&mut conn, &keepers_and(&[order("chronological", &[&second, &first]), order("sequel", &[&second])]))
+        .unwrap();
+    // Rank order, not name order: "chronological" sorts before "published". "sequel" does not hold the book.
+    let expected = vec![Holding { series: "keepers".into(), orders: vec!["published".into(), "chronological".into()] }];
+    assert_eq!(series_holding(&conn, &first).unwrap(), expected);
+}
+
+#[test]
+fn series_holding_lists_series_by_name() {
+    let mut conn = db();
+    write_book(&mut conn, &keeper()).unwrap();
+    write_book(&mut conn, &keepers_return()).unwrap();
+    let (first, second) = books();
+    put_series(&mut conn, &keepers_and(&[order("chronological", &[&second, &first])])).unwrap();
+    let harbour =
+        Series { name: "harbour".into(), title: "The Harbour".into(), orders: vec![order("main", &[&second])] };
+    put_series(&mut conn, &harbour).unwrap();
+    let expected = vec![
+        Holding { series: "harbour".into(), orders: vec!["main".into()] },
+        Holding { series: "keepers".into(), orders: vec!["published".into(), "chronological".into()] },
+    ];
+    assert_eq!(series_holding(&conn, &second).unwrap(), expected);
+}
+
+#[test]
+fn series_holding_of_a_book_in_no_series_is_empty() {
+    let mut conn = library();
+    write_book(&mut conn, &keepers_light()).unwrap();
+    assert_eq!(series_holding(&conn, &keepers_light().book.sha256).unwrap(), []);
+}
+
+#[test]
+fn series_holding_needs_the_book_stored() {
+    let conn = library();
+    let unknown = "c".repeat(64);
+    not_found(series_holding(&conn, &unknown), &format!("book {unknown}"));
+}
+
+#[test]
 fn series_and_links_round_trip() {
     let mut conn = library();
     assert_eq!(read_series(&conn, "keepers").unwrap(), keepers());
@@ -144,8 +188,8 @@ fn series_scope_links_at_introduction() {
 
     let ada = character(&cast, &key(&first, "ada"));
     assert_eq!(ada.merged, [key(&second, "ada")]);
-    assert_eq!(ada.name, "Ada Marsh");
-    assert_eq!(ada.aliases, ["the keeper", "Mrs. Marsh", "Ada"]);
+    assert_eq!(ada.name.text, "Ada Marsh");
+    assert_eq!(texts(&ada.aliases), ["the keeper", "Mrs. Marsh", "Ada"]);
     assert_eq!(ada.first, ChapterRef { book: first.clone(), chapter: 1 });
     assert_eq!(ada.last, ChapterRef { book: second.clone(), chapter: 1 });
 
@@ -165,14 +209,14 @@ fn link_waits_for_its_chapter() {
 
     // The reader is in the chapter that calls the sailor Tom, and has not finished it.
     let cast = cast_at(&conn, &second, "c3.xhtml", &in_series(None)).unwrap();
-    assert_eq!(character(&cast, &sailor).name, "the old sailor");
+    assert_eq!(character(&cast, &sailor).name.text, "the old sailor");
     assert_eq!(character(&cast, &tom).merged, [key(&first, "stranger")]);
 
     let cast = cast_at(&conn, &second, "back.xhtml", &in_series(None)).unwrap();
     assert_eq!(keys(&cast), [&key(&first, "ada"), &key(&first, "pip"), &tom]);
     let tom_reed = character(&cast, &tom);
-    assert_eq!(tom_reed.name, "Tom Reed");
-    assert_eq!(tom_reed.aliases, ["the stranger", "the old sailor", "Tom"]);
+    assert_eq!(tom_reed.name.text, "Tom Reed");
+    assert_eq!(texts(&tom_reed.aliases), ["the stranger", "the old sailor", "Tom"]);
     assert_eq!(tom_reed.merged, [key(&first, "stranger"), sailor]);
     assert_eq!(tom_reed.last, ChapterRef { book: second.clone(), chapter: 3 });
 
@@ -211,14 +255,17 @@ fn links_of_a_book_read_whole_are_applied() {
     let cast = cast_at(&conn, &third, "c1.xhtml", &in_series(None)).unwrap();
     assert_eq!(keys(&cast), [&ada, &pip, &tom]);
     assert_eq!(character(&cast, &tom).merged, [stranger.clone(), sailor.clone()]);
-    assert_eq!(cast, cast_at(&conn, &second, "back.xhtml", &in_series(None)).unwrap());
+    let second_read = cast_at(&conn, &second, "back.xhtml", &in_series(None)).unwrap();
+    assert_eq!(cast.characters, second_read.characters);
+    assert_eq!(cast.relations, second_read.relations);
+    assert_eq!(cast.books, [first.as_str(), second.as_str(), third.as_str()]);
 
     // Past that chapter the captain is Tom Reed as well, through the sailor.
     let cast = cast_at(&conn, &third, "c2.xhtml", &in_series(None)).unwrap();
     assert_eq!(keys(&cast), [&ada, &pip, &tom]);
     let tom_reed = character(&cast, &tom);
-    assert_eq!(tom_reed.name, "Tom Reed");
-    assert_eq!(tom_reed.aliases, ["the stranger", "the old sailor", "Tom", "Captain Reed"]);
+    assert_eq!(tom_reed.name.text, "Tom Reed");
+    assert_eq!(texts(&tom_reed.aliases), ["the stranger", "the old sailor", "Tom", "Captain Reed"]);
     assert_eq!(tom_reed.merged, [stranger, sailor, captain]);
     assert_eq!(tom_reed.last, ChapterRef { book: third, chapter: 1 });
 }
@@ -226,8 +273,24 @@ fn links_of_a_book_read_whole_are_applied() {
 #[test]
 fn front_matter_shows_only_earlier_books() {
     let conn = library();
-    let (_, second) = books();
-    assert_eq!(cast_at(&conn, &second, "front.xhtml", &in_series(None)).unwrap(), fold_book(&keeper(), 3));
+    let (first, second) = books();
+    let cast = cast_at(&conn, &second, "front.xhtml", &in_series(None)).unwrap();
+    let whole = fold_book(&keeper(), 3);
+    assert_eq!(cast.characters, whole.characters);
+    assert_eq!(cast.relations, whole.relations);
+    assert_eq!(cast.books, [first, second]);
+}
+
+#[test]
+fn the_cast_lists_the_books_it_folded() {
+    let (first, second) = books();
+    assert_eq!(fold_book(&keeper(), 0).books, [first.as_str()]);
+    let both = fold_series(&[keeper(), keepers_return()], Some(1), &keepers_links());
+    assert_eq!(both.books, [first.as_str(), second.as_str()]);
+    // In the front matter nothing of the second book is read, and it is listed all the same.
+    let front = cast_at(&library(), &second, "front.xhtml", &in_series(None)).unwrap();
+    assert_eq!(front.books, [first.as_str(), second.as_str()]);
+    assert!(fold_series(&[], None, &[]).books.is_empty());
 }
 
 #[test]

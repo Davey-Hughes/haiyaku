@@ -169,17 +169,17 @@ impl<'a> Chapters<'a> {
 /// that chapter and the overturn's note in brackets. Each chapter is written as `chapters` writes it.
 fn draw(cast: &Cast, chapters: &Chapters<'_>) -> String {
     let names: HashMap<&EntityKey, &str> =
-        cast.characters.iter().map(|character| (&character.key, character.name.as_str())).collect();
+        cast.characters.iter().map(|character| (&character.key, character.name.text.as_str())).collect();
     // Every end of a relation is a character of the cast; should one not be, its id stands in, where indexing
     // would panic over a line of output.
     let name = |key: &EntityKey| names.get(key).map_or_else(|| key.id.clone(), |name| (*name).to_owned());
 
     let mut lines = vec!["Characters".to_owned()];
     for character in &cast.characters {
-        let aliases =
-            if character.aliases.is_empty() { String::new() } else { format!(" ({})", character.aliases.join(", ")) };
+        let aliases: Vec<&str> = character.aliases.iter().map(|alias| alias.text.as_str()).collect();
+        let aliases = if aliases.is_empty() { String::new() } else { format!(" ({})", aliases.join(", ")) };
         let span = chapters.span(&character.first, &character.last);
-        lines.push(format!("  {}{aliases}, {span}", character.name));
+        lines.push(format!("  {}{aliases}, {span}", character.name.text));
     }
     lines.push(String::new());
     lines.push("Relations".to_owned());

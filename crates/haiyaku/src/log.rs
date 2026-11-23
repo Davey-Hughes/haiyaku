@@ -132,7 +132,7 @@ pub enum EventBody {
 }
 
 /// A name as the text gives it, and the parts of it that could be told apart.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Name {
     pub text: String,
     pub given: Option<String>,

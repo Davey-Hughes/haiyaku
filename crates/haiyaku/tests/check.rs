@@ -9,6 +9,7 @@ mod common;
 use std::collections::BTreeMap;
 
 use common::epub::{chapter_text, name, relation, relevant_roster};
+use common::texts;
 use haiyaku::book::ChapterText;
 use haiyaku::extract::{Outcome, Rejected, Roster, check, check_reveals, reveal_schema, schema};
 use haiyaku::fold::{Cast, Folder};
@@ -315,8 +316,8 @@ fn named_upgrades_a_description() {
     );
     let cast = cast(&roster);
     assert_eq!(cast.characters.len(), 1);
-    assert_eq!(cast.characters[0].name, "Ada Marsh");
-    assert_eq!(cast.characters[0].aliases, ["the keeper"]);
+    assert_eq!(cast.characters[0].name.text, "Ada Marsh");
+    assert_eq!(texts(&cast.characters[0].aliases), ["the keeper"]);
 }
 
 #[test]
@@ -343,8 +344,8 @@ fn lesser_name_becomes_an_alias() {
         ]
     );
     let cast = cast(&roster);
-    assert_eq!(cast.characters[0].name, "Ada Marsh");
-    assert_eq!(cast.characters[0].aliases, ["the keeper", "Mrs. Marsh"]);
+    assert_eq!(cast.characters[0].name.text, "Ada Marsh");
+    assert_eq!(texts(&cast.characters[0].aliases), ["the keeper", "Mrs. Marsh"]);
 }
 
 #[test]
@@ -363,7 +364,7 @@ fn name_outranking_the_shown_name_is_named() {
     );
 
     // "Mr. Reed", given as an alias, outranks "the stranger" and is shown from chapter 1 on.
-    assert_eq!(cast(&roster).characters[0].name, "Mr. Reed");
+    assert_eq!(cast(&roster).characters[0].name.text, "Mr. Reed");
 
     let second = chapter_text(2, 2, &["Tom Reed took off his hat and shook the rain from it."]);
     let outcome = check(&mut roster, &second, &reply(&[character("c1", tom_reed(), &[], "Tom Reed took off his hat")]));
@@ -373,7 +374,7 @@ fn name_outranking_the_shown_name_is_named() {
         bodies(&outcome.events),
         [appeared("c1"), named("c1", stored("Tom Reed", Some("Tom"), Some("Reed"), None, None))]
     );
-    assert_eq!(cast(&roster).characters[0].name, "Tom Reed");
+    assert_eq!(cast(&roster).characters[0].name.text, "Tom Reed");
 }
 
 #[test]
@@ -425,8 +426,8 @@ fn alias_outranking_the_shown_name_is_named() {
         ]
     );
     let cast = cast(&roster);
-    assert_eq!(cast.characters[0].name, "Mrs. Marsh");
-    assert_eq!(cast.characters[0].aliases, ["the tall woman", "Widow Marsh", "the widow"]);
+    assert_eq!(cast.characters[0].name.text, "Mrs. Marsh");
+    assert_eq!(texts(&cast.characters[0].aliases), ["the tall woman", "Widow Marsh", "the widow"]);
 }
 
 /// A roster that holds Ada Marsh as c1, with the alias Mrs. Marsh.

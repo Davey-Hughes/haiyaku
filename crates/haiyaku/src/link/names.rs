@@ -2,15 +2,15 @@
 //! character's name, and which of the two characters' names turn the candidate down. Every part is compared
 //! reduced (see [`reduce`]), so case and punctuation do not keep two names apart.
 
-use crate::extract::reduce;
 use crate::log::Name;
+use crate::words::{reduce, reduced_words};
 
 /// `name` with its title and a leading "the" set aside: the words of its text, each reduced, less the words of
 /// its title and less a first word "the", joined by one space. The title's words are set aside wherever they
 /// stand, since a title may come after the name as well as before it ("Mrs. Marsh", "마시 부인").
 pub(crate) fn bare(name: &Name) -> String {
-    let title: Vec<String> = name.title.as_deref().map(|title| words(title).collect()).unwrap_or_default();
-    let mut kept: Vec<String> = words(&name.text).filter(|word| !title.contains(word)).collect();
+    let title: Vec<String> = name.title.as_deref().map(|title| reduced_words(title).collect()).unwrap_or_default();
+    let mut kept: Vec<String> = reduced_words(&name.text).filter(|word| !title.contains(word)).collect();
     // An article says nothing of who is meant, so "the old sailor" and "old sailor" are one description.
     if kept.first().is_some_and(|word| word == "the") {
         kept.remove(0);
@@ -67,18 +67,13 @@ fn apart(later: &[&Name], earlier: &[&Name], label: fn(&Name) -> &Option<String>
 fn used(part: &str, names: &[&Name]) -> bool {
     names.iter().any(|name| {
         [&name.given, &name.surname].into_iter().any(|label| part_of(label).as_deref() == Some(part))
-            || words(&name.text).any(|word| word == part)
+            || reduced_words(&name.text).any(|word| word == part)
     })
 }
 
 /// A labelled part of a name, reduced. One that reduces to nothing is no part: it would equal any other such.
 fn part_of(label: &Option<String>) -> Option<String> {
     label.as_deref().map(reduce).filter(|part| !part.is_empty())
-}
-
-/// The runs of letters and digits of `text`, each reduced.
-fn words(text: &str) -> impl Iterator<Item = String> {
-    text.split(|c: char| !c.is_alphanumeric()).filter(|word| !word.is_empty()).map(reduce)
 }
 
 #[cfg(test)]

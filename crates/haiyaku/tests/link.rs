@@ -202,7 +202,7 @@ fn namesakes_stay_apart() {
     let named: Vec<&EntityKey> = cast
         .characters
         .iter()
-        .filter(|character| character.name == "Tom Reed")
+        .filter(|character| character.name.text == "Tom Reed")
         .map(|character| &character.key)
         .collect();
     assert_eq!(named, [&key(&logs[0], "tom"), &key(&logs[1], "father")]);

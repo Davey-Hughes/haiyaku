@@ -11,11 +11,12 @@ use super::prompt::{Candidate, SYSTEM, Sent, fits, line, prompt, reference, sche
 use crate::Result;
 use crate::cast::fold_series;
 use crate::extract::cache::{Cache, answer};
-use crate::extract::{MIN_QUOTE_WEIGHT, quote_in, reduce, weight};
+use crate::extract::{MIN_QUOTE_WEIGHT, quote_in, weight};
 use crate::fold::{Cast, Character, EntityKey};
 use crate::llm::{Backend, Reply, Request};
 use crate::log::{BookLog, Event, EventBody, Name};
 use crate::store::{Link, LinkMethod};
+use crate::words::reduce;
 
 /// What the calls of a [`link_order`] were and what they took, and which earlier characters were turned down
 /// without a call.
@@ -198,7 +199,7 @@ fn link_character(
                         earlier.candidates.iter().any(|(other, _, why)| other == key && *why == refusal)
                     };
                     if !refused.iter().any(reported) {
-                        turned_down.push((key.clone(), candidate.character.name.clone(), refusal));
+                        turned_down.push((key.clone(), candidate.character.name.text.clone(), refusal));
                     }
                 }
             }
@@ -253,7 +254,7 @@ fn link_character(
             chapter,
             candidates: candidates
                 .iter()
-                .map(|candidate| (candidate.character.key.clone(), candidate.character.name.clone()))
+                .map(|candidate| (candidate.character.key.clone(), candidate.character.name.text.clone()))
                 .collect(),
             answer: chosen,
             quote,
@@ -396,8 +397,8 @@ impl<'a> Earlier<'a> {
     fn listed(&self) -> Candidate {
         Candidate {
             book: line(self.book),
-            name: line(&self.character.name),
-            others: self.character.aliases.iter().map(|other| line(other)).collect(),
+            name: line(&self.character.name.text),
+            others: self.character.aliases.iter().map(|other| line(&other.text)).collect(),
             introduction: line(self.introduction),
         }
     }
@@ -443,7 +444,7 @@ impl<'a> Later<'a> {
         let of_relative =
             |link: &&Link| link.later.book == self.key.book && relatives.contains(&link.later.id.as_str());
         let shown = |key: &EntityKey| {
-            character_of(own, &key.id).map_or_else(|| key.id.clone(), |character| character.name.clone())
+            character_of(own, &key.id).map_or_else(|| key.id.clone(), |character| character.name.text.clone())
         };
         let refusal = |link: &Link| Refusal::Related { relative: link.later.clone(), name: shown(&link.later) };
         links.iter().filter(of_relative).map(|link| (link.earlier.clone(), refusal(link))).collect()

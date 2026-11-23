@@ -72,6 +72,17 @@ no right one. After the fix checks 1 to 3 pass in both languages, and one
 of 202 links is wrong, made through an extraction alias (O19). The run
 leaves O18 to O23 open; it is in [notes.md](notes.md).
 
+haiyaku 0.2.0 adds the name look-up
+([the design](superpowers/specs/2026-11-23-haiyaku-name-lookup-design.md),
+[the plan](superpowers/plans/2026-11-23-haiyaku-name-lookup.md)). Each
+character of a cast carries its names with their labels, and the cast lists
+the books it folded. `characters_named` finds the characters a text names,
+most recently seen first, with how much of the text each match covers and
+which name matched. `series_holding` gives the series and reading orders that
+hold a book. The name rules that extraction, linking and the look-up share
+build without `extract`. The owner publishes 0.2.0 to crates.io from main
+after the merge.
+
 ## Decided
 
 - A Rust crate that works as a library and as a standalone binary.
@@ -100,15 +111,27 @@ leaves O18 to O23 open; it is in [notes.md](notes.md).
   full name included, goes to the model, one call per later character
   listing all its candidates
   ([the linking design](superpowers/specs/2026-11-22-haiyaku-linking-design.md)).
-- The cast cuts at the last chapter the reader finished, never mid-chapter.
+- The cast cuts at the last chapter the reader finished, never mid-chapter;
+  the cut holds for a tap on a name too.
 - v1 links Korean series as well as English ones.
 - haiyaku builds its own model backends, learning from subcheck's; the two
   share no code.
 - Logs live in a structured SQLite schema, database first. A sidecar file
   with the same schema carries a log from the desktop to taiyaku.
-- The consumer of the library decides how the data is drawn, so that taiyaku
-  controls its own style: the library hands out the cast as data and builds
-  no markup. The HTML view that checks a run belongs to the binary (O7).
+- haiyaku is a library in its own right. A caller's needs may justify an API,
+  but it must be callable generally. The caller draws the data: haiyaku hands
+  out data only and builds no markup, and the page that checks a run belongs
+  to the binary (O7).
+- taiyaku builds on haiyaku first, with a tap on a name that shows a card; a
+  Cast panel comes later.
+- The look-up is two general pieces, `cast_at` and a pure look-up over any cast
+  ([the name look-up design](superpowers/specs/2026-11-23-haiyaku-name-lookup-design.md)).
+- Earlier books of the series show on the card when the reader's setting says
+  so.
+- One character map per edition's series for now, with joining editions kept
+  possible.
+- For now the owner fills a local taiyaku database by hand; later taiyaku runs
+  extraction itself (O4).
 - The design: [the library design](superpowers/specs/2026-11-21-haiyaku-library-design.md).
 - haiyaku is published on crates.io, and taiyaku depends on the published
   crate. Its source is public at https://github.com/Davey-Hughes/haiyaku.
@@ -117,8 +140,8 @@ leaves O18 to O23 open; it is in [notes.md](notes.md).
 
 ## Next
 
-1. Design the taiyaku integration; brainstorm with the owner first (the
-   owner's choice, 2026-11-23).
+1. Design the taiyaku integration in taiyaku's repository, on haiyaku 0.2.0
+   from crates.io (the name look-up design, "What taiyaku will do with this").
 
 ## Open
 
@@ -139,9 +162,8 @@ leaves O18 to O23 open; it is in [notes.md](notes.md).
 - O6: Closed: migration 002 is the version 2 migration, and
   `import_migrates_a_version_one_sidecar` imports a version 1 sidecar
   through it.
-- O7: How far "the consumer decides how the data is drawn" goes: data only,
-  as plan 2 builds it, or also style hooks on a view the library ships.
-  Decide when the taiyaku integration is designed.
+- O7: Closed: data only; the caller draws the data and haiyaku hands out data
+  only (the owner, 2026-11-23; the name look-up design).
 - O8: A Claude call that times out is stopped by killing the process
   haiyaku started. A launcher that does not exec the real program, such as
   a version manager's shim, leaves the real call running after the
@@ -154,7 +176,8 @@ leaves O18 to O23 open; it is in [notes.md](notes.md).
   or kanji. A run of letters with no space or punctuation in it counts as
   one word, and a name is found at the start of a word, so a name in the
   middle of a run is not found until a word splitter exists. No Japanese
-  book is in the corpus or in plan 2's acceptance run.
+  book is in the corpus or in plan 2's acceptance run. The name look-up
+  inherits the limit, letting anything run on after kana or a Han character.
 - O10: The reply cache keys the claude backend by the model alias the user
   names (`claude` is `sonnet`), not by the model that answered. When the
   alias moves to a newer model, replies cached from the old one are reused
@@ -175,7 +198,8 @@ leaves O18 to O23 open; it is in [notes.md](notes.md).
   by the surname route, which keeps it from matching the start of other
   words. Such a character is listed only by a whole name in the chapter or
   by a recent sighting, so after a gap it can come back as a second
-  character.
+  character. The name look-up inherits the limit: such a surname alone
+  names no one, even where an alias is that surname alone.
 - O16: The second call can overturn a relation that still half holds. An
   overturn covers every earlier statement of its kind between the two, so
   in the Korean acceptance run Ron's enmity with Snape, recorded when Snape
@@ -241,3 +265,8 @@ leaves O18 to O23 open; it is in [notes.md](notes.md).
   relative). A joint call for related characters who share a candidate,
   or dropping the first link and asking again, would remove it; the owner
   decides.
+- O25: Punctuation splits words, so the name look-up can match a name
+  across a sentence break: "Thanks, Ned. Marsh is waiting" tapped at "Ned"
+  finds Ned Marsh as a whole name over "Ned. Marsh" and hides Ned Hale.
+  "Mr. Marsh" needs the same rule, so a fix has to tell a title's full stop
+  from a sentence's.

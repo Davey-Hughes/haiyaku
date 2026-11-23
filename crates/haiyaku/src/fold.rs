@@ -14,34 +14,41 @@ pub struct EntityKey {
     pub id: String,
 }
 
-/// A chapter of a book. Which of two comes first is for the order the books were folded in to say, so this
-/// has no ordering of its own.
+/// A chapter of a book. Which of two comes first is for the order the books were folded in to say, as
+/// [`Cast::books`] gives it, so this has no ordering of its own.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChapterRef {
     pub book: String,
     pub chapter: u32,
 }
 
-/// What the folded events say: the characters in the order the reader met them, and each pair of them the
-/// text relates, in the order the pairs first came up.
+/// What the folded events say: the characters in the order the reader met them, each pair of them the text
+/// relates, in the order the pairs first came up, and the books folded.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Cast {
     pub characters: Vec<Character>,
     pub relations: Vec<Relation>,
+    /// Every book started, as a [`ChapterRef`] names it, in the order the books were started, a book with
+    /// nothing of it read yet among them. It is what orders the chapters of different books: of two, the one
+    /// whose book comes first here is the earlier.
+    pub books: Vec<String>,
 }
 
 /// A character as the folded events leave it.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Character {
     pub key: EntityKey,
-    /// The best name known: the fullest that an `Introduced` or `Named` event has given it or a character
-    /// merged into it, and never an alias. A name takes the place of the one shown only by being fuller, so
-    /// of names equally full the character keeps the earliest of its own, and its own over that of a
-    /// character merged into it.
-    pub name: String,
-    /// Every other name it has carried, each once, in the order the text first gave them, to it or to a
-    /// character merged into it.
-    pub aliases: Vec<String>,
+    /// The best name known, with the labels of the event that gave it: the fullest by [`Name::rank`] that an
+    /// `Introduced` or `Named` event has given it or a character merged into it, and never an alias. A name
+    /// takes the place of the one shown only by being fuller, so of names equally full the character keeps
+    /// the earliest of its own, and its own over that of a character merged into it.
+    pub name: Name,
+    /// Every other name it has carried, each text once, in the order the text first gave them, to it or to a
+    /// character merged into it. A text given with different labels is here as the first event to give it
+    /// any label (a given name, a surname, a title or a title's sex) gave it, and unlabelled where none did.
+    pub aliases: Vec<Name>,
     pub first: ChapterRef,
     pub last: ChapterRef,
     /// The characters that turned out to be this one, in the order they were found to be.
@@ -50,6 +57,7 @@ pub struct Character {
 
 /// What the text says of two characters, with `a < b`: a pair is held once, whichever way its facts run.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Relation {
     pub a: EntityKey,
     pub b: EntityKey,
@@ -60,6 +68,7 @@ pub struct Relation {
 /// One thing the text says of a pair, however often it says it. An overturn closes it: the statements it covers
 /// make one fact, marked with it, and a later statement of the same kind starts another.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Fact {
     pub kind: RelationKind,
     /// The end the fact runs from, for a kind that is [directed](RelationKind::directed); `None` for the
@@ -76,6 +85,7 @@ pub struct Fact {
 
 /// The event that showed a fact was never true.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Overturn {
     /// The chapter whose overturned event covers the fact.
     pub at: ChapterRef,
@@ -101,14 +111,12 @@ struct Origin {
 /// A character while events are still coming in.
 #[derive(Debug)]
 struct Member {
-    name: String,
-    /// The rank of `name`. Another name replaces it only by outranking it, whether an event gives that name
-    /// or a merged character brings it, so of equals the one already shown stays.
-    rank: u8,
-    /// Every name carried, `name` among them, each once, with the event that first gave it to this
-    /// character or to one merged into it. The aliases are ordered by that event and not by when the name
-    /// reached this character, or their order would turn on when a merge is applied.
-    names: Vec<(Origin, String)>,
+    /// The name shown, as the event that made it the one shown gave it. Another name replaces it only by
+    /// outranking it, whether an event gives that name or a merged character brings it, so of equals the one
+    /// already shown stays.
+    name: Name,
+    /// Every name carried, `name`'s text among them, each text once.
+    names: Vec<Carried>,
     /// The earliest introduction among this character and those merged into it: where the reader first met
     /// it, which gives both its `first` and its place in the cast.
     introduced: Origin,
@@ -117,10 +125,23 @@ struct Member {
 }
 
 impl Member {
-    fn carry(&mut self, name: &str, at: Origin) {
-        match self.names.iter_mut().find(|(_, carried)| carried == name) {
-            Some((first, _)) => *first = (*first).min(at),
-            None => self.names.push((at, name.to_owned())),
+    fn carry(&mut self, name: &Name, at: Origin) {
+        self.take(Carried::new(name, at));
+    }
+
+    /// Takes a name given to the character or brought by one merged into it. Of each text it keeps the
+    /// earliest event to give it and the earliest to label it, whatever order they arrive in.
+    fn take(&mut self, carried: Carried) {
+        let Some(held) = self.names.iter_mut().find(|held| held.name.text == carried.name.text) else {
+            self.names.push(carried);
+            return;
+        };
+        held.first = held.first.min(carried.first);
+        if let Some(at) = carried.labelled
+            && held.labelled.is_none_or(|labelled| at < labelled)
+        {
+            held.name = carried.name;
+            held.labelled = Some(at);
         }
     }
 
@@ -128,11 +149,31 @@ impl Member {
     /// a character merged into this one was shown under, are the only names that can become the one it is
     /// shown under.
     fn own(&mut self, name: &Name, at: Origin) {
-        if name.rank() > self.rank {
-            self.rank = name.rank();
-            self.name.clone_from(&name.text);
+        if name.rank() > self.name.rank() {
+            self.name.clone_from(name);
         }
-        self.carry(&name.text, at);
+        self.carry(name, at);
+    }
+}
+
+/// A name's text as a character carries it. Both of its events are the earliest by the order of the events,
+/// not by when the name reached the character: otherwise where a merge is applied would change the order of
+/// the aliases and the labels they show.
+#[derive(Debug)]
+struct Carried {
+    /// The event that first gave the text, to the character or to one merged into it: what orders the aliases.
+    first: Origin,
+    /// The text with the labels of the event at `labelled`, or with none while no event has labelled it.
+    name: Name,
+    /// The first event to give the text with any label.
+    labelled: Option<Origin>,
+}
+
+impl Carried {
+    fn new(name: &Name, at: Origin) -> Self {
+        let labelled =
+            name.given.is_some() || name.surname.is_some() || name.title.is_some() || name.title_sex.is_some();
+        Self { first: at, name: name.clone(), labelled: labelled.then_some(at) }
     }
 }
 
@@ -238,9 +279,8 @@ impl Folder {
                     Some(member) => member.own(name, at),
                     None => {
                         let member = Member {
-                            name: name.text.clone(),
-                            rank: name.rank(),
-                            names: vec![(at, name.text.clone())],
+                            name: name.clone(),
+                            names: vec![Carried::new(name, at)],
                             introduced: at,
                             last: at.place,
                             merged: Vec::new(),
@@ -256,7 +296,7 @@ impl Folder {
             }
             EventBody::Alias { entity, name } => {
                 if let Some(member) = self.seen(&self.key(book, entity), at.place) {
-                    member.carry(&name.text, at);
+                    member.carry(name, at);
                 }
             }
             EventBody::Appeared { entity } => {
@@ -318,14 +358,13 @@ impl Folder {
             self.members.insert(other, gone);
             return;
         };
-        for (at, name) in &gone.names {
-            kept.carry(name, *at);
+        for carried in gone.names {
+            kept.take(carried);
         }
         // The best name known is the fuller of the two, whichever of them the text gave it to and whether
         // that was before the merge or after: a name that comes after reaches the survivor through `own`,
         // under the same rule.
-        if gone.rank > kept.rank {
-            kept.rank = gone.rank;
+        if gone.name.rank() > kept.name.rank() {
             kept.name = gone.name;
         }
         kept.merged.extend(gone.merged);
@@ -372,11 +411,13 @@ impl Folder {
         let mut members: Vec<_> = members.into_iter().collect();
         members.sort_by_key(|(_, member)| member.introduced);
         let characters = members.into_iter().map(|(key, member)| {
-            let Member { name, mut names, introduced, last, merged, .. } = member;
-            names.sort_by_key(|(first, _)| *first);
-            let aliases = names.into_iter().map(|(_, carried)| carried).filter(|carried| *carried != name).collect();
+            let Member { name, mut names, introduced, last, merged } = member;
+            names.sort_by_key(|carried| carried.first);
+            let aliases =
+                names.into_iter().map(|carried| carried.name).filter(|carried| carried.text != name.text).collect();
             Character { key, name, aliases, first: chapter(introduced.place), last: chapter(last), merged }
         });
+        let characters = characters.collect();
 
         // A pair with overturns and no statement has no fact to show.
         let mut pairs: Vec<_> = relations
@@ -385,8 +426,9 @@ impl Folder {
             .collect();
         pairs.sort_by_key(|(first, ..)| *first);
         let relations = pairs.into_iter().map(|(_, (a, b), held)| Relation { a, b, facts: held.facts(chapter) });
+        let relations = relations.collect();
 
-        Cast { characters: characters.collect(), relations: relations.collect() }
+        Cast { characters, relations, books }
     }
 
     /// The character `id` stands for in the book at `book`: itself, or the survivor of the merges that took

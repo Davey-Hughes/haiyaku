@@ -13,5 +13,5 @@ pub use check::{Outcome, Rejected, check, check_reveals, reveal_schema, schema};
 pub use prompt::{PROMPT_VERSION, SYSTEM, prompt, reveal_prompt};
 pub use roster::Roster;
 pub use run::{Options, extract_book};
+pub(crate) use text::quote_in;
 pub use text::{MIN_QUOTE_WEIGHT, QuoteError, locate_name, locate_quote, weight};
-pub(crate) use text::{quote_in, reduce};

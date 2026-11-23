@@ -135,6 +135,55 @@ fn series_in_snapshot(conn: &Connection, name: &str) -> Result<Series> {
     Ok(Series { name: name.to_owned(), title, orders: orders.collect::<Result<_>>()? })
 }
 
+/// A series that holds a book, and those of its reading orders that do.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Holding {
+    pub series: String,
+    /// By rank: the series' default order first, when it holds the book.
+    pub orders: Vec<String>,
+}
+
+/// The series that have a reading order holding `book`, by name, each with the names of its orders that hold it,
+/// by rank. A stored book that no series holds gives an empty list.
+///
+/// Which series and which order to read the book in is the caller's choice; nothing here ranks one above another.
+///
+/// All of it is read from one state of the database, as [`read_series`] reads: a series that another
+/// connection replaces during the call comes back as it was or as it has become.
+///
+/// # Errors
+///
+/// [`Error::NotFound`] naming `book <sha256>` when the book is not stored; [`Error::Sqlite`] when the database
+/// cannot be read.
+pub fn series_holding(conn: &Connection, book: &str) -> Result<Vec<Holding>> {
+    // One snapshot, because the rows and the check that the book is stored are separate statements: with the
+    // book removed between them, a book that is not stored would come back as one in no series.
+    in_snapshot(conn, |conn| holding_in_snapshot(conn, book))
+}
+
+fn holding_in_snapshot(conn: &Connection, book: &str) -> Result<Vec<Holding>> {
+    if !book_is_stored(conn, book)? {
+        return Err(Error::NotFound(format!("book {book}")));
+    }
+    let mut stmt = conn.prepare(
+        "SELECT o.series, o.name
+         FROM haiyaku_order o
+         WHERE EXISTS (SELECT 1 FROM haiyaku_order_book b
+                       WHERE b.series = o.series AND b.order_name = o.name AND b.book = ?1)
+         ORDER BY o.series, o.rank",
+    )?;
+    let mut rows = stmt.query([book])?;
+    let mut held: Vec<Holding> = Vec::new();
+    while let Some(row) = rows.next()? {
+        let (series, order): (String, String) = (row.get(0)?, row.get(1)?);
+        match held.last_mut() {
+            Some(last) if last.series == series => last.orders.push(order),
+            _ => held.push(Holding { series, orders: vec![order] }),
+        }
+    }
+    Ok(held)
+}
+
 /// Stores `links` as the links of one reading order, replacing those it had, in one transaction: on any error
 /// the database is as it was.
 ///

@@ -4,9 +4,10 @@
 use std::cmp::Reverse;
 use std::collections::HashSet;
 
-use super::text::{locate_name, locate_surname, reduce};
+use super::text::{locate_name, locate_surname};
 use crate::book::ChapterText;
 use crate::log::{Entity, EntityKind, Event, EventBody, Name, Position, RelationKind};
+use crate::words::reduce;
 
 /// What extraction knows of the book so far: the characters, their names, the merges, and every event kept.
 #[derive(Debug, Default)]
@@ -331,10 +332,10 @@ mod tests {
         roster.events().iter().for_each(|event| folder.apply(event));
         let cast = folder.finish();
         let [character] = cast.characters.as_slice() else { panic!("{cast:?}") };
-        let aliases: Vec<&str> = character.aliases.iter().map(String::as_str).collect();
-        assert_eq!(roster.names_of("c1"), Some((character.name.as_str(), aliases.clone())));
-        assert_eq!(roster.names_of("c2"), Some((character.name.as_str(), aliases)));
-        assert_eq!(character.name, "Tom Reed");
+        let aliases: Vec<&str> = character.aliases.iter().map(|alias| alias.text.as_str()).collect();
+        assert_eq!(roster.names_of("c1"), Some((character.name.text.as_str(), aliases.clone())));
+        assert_eq!(roster.names_of("c2"), Some((character.name.text.as_str(), aliases)));
+        assert_eq!(character.name.text, "Tom Reed");
     }
 
     /// An id given out of turn would leave `next_id` to give it out a second time.

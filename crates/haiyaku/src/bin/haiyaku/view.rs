@@ -82,14 +82,14 @@ impl Books<'_> {
     /// fact's `overturned` is `null` for a fact that stands.
     fn step(&self, book: usize, n: u32, links: &[Link]) -> Value {
         let chapter: Option<&Chapter> = self.logs[book].chapters.iter().find(|chapter| chapter.number == n);
-        let Cast { characters, relations } = fold_series(&self.logs[..=book], Some(n), links);
+        let Cast { characters, relations, .. } = fold_series(&self.logs[..=book], Some(n), links);
         let characters: Vec<Value> = characters
             .iter()
             .map(|character| {
                 json!({
                     "id": self.id(&character.key),
-                    "name": character.name,
-                    "aliases": character.aliases,
+                    "name": character.name.text,
+                    "aliases": character.aliases.iter().map(|alias| &alias.text).collect::<Vec<_>>(),
                     "first": character.first.chapter,
                     "firstBook": self.index(&character.first.book),
                     "last": character.last.chapter,

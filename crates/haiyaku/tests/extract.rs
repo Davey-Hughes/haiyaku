@@ -10,11 +10,11 @@ use std::cell::RefCell;
 use std::fs;
 use std::path::Path;
 
-use common::db;
 use common::epub::{
     KEEPER_CHAPTERS, KEEPER_METADATA, Toc, book, chapter_text, keeper_epub, keeper_replies, name, nav_map, ncx,
     relation, relevant_roster, xhtml,
 };
+use common::{db, texts};
 use haiyaku::book::{Book, ChapterText};
 use haiyaku::extract::{
     Options, PROMPT_VERSION, Roster, SYSTEM, check, check_reveals, extract_book, prompt, reveal_prompt, reveal_schema,
@@ -395,7 +395,7 @@ fn cast(log: &BookLog, document: &str) -> Cast {
 
 /// The names the characters of `cast` are shown under, sorted.
 fn names(cast: &Cast) -> Vec<&str> {
-    let mut names: Vec<&str> = cast.characters.iter().map(|character| character.name.as_str()).collect();
+    let mut names: Vec<&str> = cast.characters.iter().map(|character| character.name.text.as_str()).collect();
     names.sort_unstable();
     names
 }
@@ -433,9 +433,9 @@ fn extracts_the_keeper() {
     let after_one = cast_at(&conn, &book.sha256, "OEBPS/c2.xhtml", &Scope::Book).unwrap();
     assert_eq!(names(&after_one), ["Pip", "the keeper"]);
     let whole = cast_at(&conn, &book.sha256, "OEBPS/back.xhtml", &Scope::Book).unwrap();
-    let shown = |wanted: &str| whole.characters.iter().find(|character| character.name == wanted);
+    let shown = |wanted: &str| whole.characters.iter().find(|character| character.name.text == wanted);
     let ada = shown("Ada Marsh").unwrap_or_else(|| panic!("{whole:#?}"));
-    assert_eq!(ada.aliases, ["the keeper", "Mrs. Marsh"]);
+    assert_eq!(texts(&ada.aliases), ["the keeper", "Mrs. Marsh"]);
     let tom = shown("Tom Reed").unwrap_or_else(|| panic!("{whole:#?}"));
     assert_eq!(tom.merged.len(), 1, "{tom:?}");
     assert!(shown("the stranger").is_none(), "{whole:#?}");

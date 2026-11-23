@@ -6,7 +6,7 @@ members = ["crates/haiyaku"]
 exclude = ["spike"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 # taiyaku's, since taiyaku builds haiyaku as a dependency: a higher floor here
 # would raise taiyaku's. CI checks every target with every feature at this
