@@ -1,6 +1,6 @@
 # Status
 
-Where haiyaku stands, what is decided, and what comes next. Updated 2026-11-26.
+Where haiyaku stands, what is decided, and what comes next. Updated 2026-11-27.
 
 ## Where it stands
 
@@ -83,17 +83,17 @@ hold a book. The name rules that extraction, linking and the look-up share
 build without `extract`. 0.2.0 is on crates.io, and taiyaku PR #308's
 Cargo.lock resolves haiyaku 0.2.0 from it.
 
-taiyaku's character cards, in taiyaku PR #308 (open), build on haiyaku 0.2.0
-from crates.io (the name look-up design, "What taiyaku will do with this"):
-a tap on a name in taiyaku's book reader looks the name up in a cast folded
-from haiyaku's tables in taiyaku's library database, and shows that
-character's card. Its prototype, on 2026-11-24, served the English and
+taiyaku's character cards, merged in taiyaku PR #308 on 2026-11-27, build on
+haiyaku 0.2.0 from crates.io (the name look-up design, "What taiyaku will do
+with this"): a tap on a name in taiyaku's book reader looks the name up in a
+cast folded from haiyaku's tables in taiyaku's library database, and shows
+that character's card. Its prototype, on 2026-11-24, served the English and
 Korean Sorcerer's Stone, Chamber of Secrets and Goblet of Fire, filled by
 0.2.0's CLI at the linking acceptance run's chapter ranges, every call
 answered from the reply cache. The prototype, the PR's design and its review
-raised O26 to O32 and part of O25 for haiyaku; O31 is closed already.
-They also raised O33, a match for each mention of a character in a text,
-which taiyaku's O543 (taiyaku PR #308) says needs haiyaku API work first.
+raised O26 to O32 and part of O25 for haiyaku; O31 is closed already. They
+also raised O33, a match for each mention of a character in a text, which
+taiyaku's O543 (taiyaku PR #308) says needs haiyaku API work first.
 
 ## Decided
 
@@ -147,6 +147,10 @@ which taiyaku's O543 (taiyaku PR #308) says needs haiyaku API work first.
 - The design: [the library design](superpowers/specs/2026-11-21-haiyaku-library-design.md).
 - haiyaku is published on crates.io, and taiyaku depends on the published
   crate. Its source is public at https://github.com/Davey-Hughes/haiyaku.
+- A release publishes from GitHub Actions when a `v<version>` tag on a commit
+  of main reaches the GitHub mirror, or from a run started by hand on that
+  tag when its push starts none, through crates.io's trusted publishing,
+  with no stored token. [releasing.md](releasing.md) has the steps.
 - The spike lives outside the workspace without the gates. Code leaves it only
   through a design doc and a plan.
 

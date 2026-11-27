@@ -1,0 +1,68 @@
+name: Publish
+
+# Runs on the GitHub mirror only. Forgejo reads .forgejo/workflows/ and, since
+# that folder exists, never reads this one. crates.io's trusted publishing
+# accepts GitHub Actions and not Forgejo, and it is what lets a release publish
+# with no stored token. docs/releasing.md has the steps.
+
+on:
+  push:
+    tags: ['v*']
+  # A run started by hand from the Actions tab, on the tag, for a tag push that
+  # started none. The release environment's tag rule (docs/releasing.md) stops
+  # a run on a branch before any step, so a branch's own copy of this file gets
+  # no token; the checks below refuse a v* tag that does not name the version
+  # or is off main, and a branch too if the rule is ever missing.
+  workflow_dispatch:
+
+permissions: {}
+
+defaults:
+  run:
+    # Named so that the runner adds pipefail: a failed `cargo metadata` then
+    # fails its step rather than handing jq nothing.
+    shell: bash
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # crates.io's trusted publisher for haiyaku names this environment, so a
+    # job outside it gets no token.
+    environment: release
+    permissions:
+      contents: read
+      id-token: write # the identity token that crates.io trades for a publish token
+    steps:
+      # Actions are pinned by commit: a tag moved upstream would otherwise
+      # change what runs with the right to publish. Full history, so that the
+      # main check can compare the tagged commit with main.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Tag matches the version
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "haiyaku") | .version')
+          if [ -z "$version" ] || [ "$GITHUB_REF" != "refs/tags/v$version" ]; then
+            echo "::error::$GITHUB_REF is not the tag v${version:-<version>}, which haiyaku's version ${version:-(unreadable)} calls for" >&2
+            exit 1
+          fi
+      # Main takes a commit only through a PR whose Forgejo CI passed, so no
+      # test runs here. HEAD is the checked-out commit, the one cargo packs.
+      - name: Commit is on main
+        run: |
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          if ! git merge-base --is-ancestor HEAD origin/main; then
+            echo "::error::the tagged commit $(git rev-parse HEAD) is not on main" >&2
+            exit 1
+          fi
+      - name: Get a crates.io token
+        id: auth
+        uses: rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca76380c54cd9 # v1.0.6
+      # cargo publish builds the package before it uploads it, which is the
+      # check that the packed source compiles.
+      - name: Publish
+        run: cargo publish -p haiyaku --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
