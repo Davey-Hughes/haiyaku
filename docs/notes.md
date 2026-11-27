@@ -128,7 +128,8 @@ reply cache.
     Goblet of Fire's Pomfrey links to Chamber of Secrets', Sorcerer's
     Stone's stays a second row in English.
   - The model chose the right candidate with a quote that was only a name:
-    Draco in Korean Chamber of Secrets.
+    Draco in Korean Chamber of Secrets, who has no link in run 1 or after
+    the fix.
   - Rightly left apart in English: Riddle and the barman, Mrs. Granger and
     Hermione, Arthur and Mrs. Weasley, Lucius and Draco, and Goblet of
     Fire's chapter-1 Tom, Mrs. Riddle, Dennis Creevey, Mrs. Finnigan,
@@ -136,6 +137,9 @@ reply cache.
     barman, Lucius and Draco, Chamber of Secrets' Mr. Weasley and the
     father in the mirror, and Goblet of Fire's Dennis Creevey, Mrs.
     Finnigan, Frank Longbottom and Narcissa.
+- **Korean Goblet of Fire's Draco is linked** (added 2026-11-26, for
+  status.md's O28): to Sorcerer's Stone's, from chapter 8, in run 1 and
+  after the fix, while Chamber of Secrets' Draco has no link in either.
 - **Other measurements.** Korean Goblet of Fire costs about 1.4 times
   English a chapter, as Sorcerer's Stone did. English Goblet of Fire
   chapter 1 rejected 4 of 19 items (21%); no other chapter came near.

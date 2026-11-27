@@ -1,6 +1,6 @@
 # Status
 
-Where haiyaku stands, what is decided, and what comes next. Updated 2026-11-23.
+Where haiyaku stands, what is decided, and what comes next. Updated 2026-11-26.
 
 ## Where it stands
 
@@ -80,8 +80,20 @@ the books it folded. `characters_named` finds the characters a text names,
 most recently seen first, with how much of the text each match covers and
 which name matched. `series_holding` gives the series and reading orders that
 hold a book. The name rules that extraction, linking and the look-up share
-build without `extract`. The owner publishes 0.2.0 to crates.io from main
-after the merge.
+build without `extract`. 0.2.0 is on crates.io, and taiyaku PR #308's
+Cargo.lock resolves haiyaku 0.2.0 from it.
+
+taiyaku's character cards, in taiyaku PR #308 (open), build on haiyaku
+0.2.0 from crates.io: a tap on a name in taiyaku's book reader looks the
+name up in a cast folded from haiyaku's tables in taiyaku's library
+database, and shows that character's card. Its prototype, on 2026-11-24,
+served the English and Korean Sorcerer's Stone, Chamber of Secrets and
+Goblet of Fire, filled by 0.2.0's CLI at the linking acceptance run's
+chapter ranges, every call answered from the reply cache. The prototype, the
+PR's design and its review raised O26 to O32 and the end of O25 for
+haiyaku; O31 is closed already. One more is not filed here: a match for
+each mention of a character on a page, which taiyaku's O543 says needs
+haiyaku API work first.
 
 ## Decided
 
@@ -140,8 +152,9 @@ after the merge.
 
 ## Next
 
-1. Design the taiyaku integration in taiyaku's repository, on haiyaku 0.2.0
-   from crates.io (the name look-up design, "What taiyaku will do with this").
+1. The taiyaku integration, on haiyaku 0.2.0 from crates.io (the name
+   look-up design, "What taiyaku will do with this"): designed in taiyaku's
+   repository and built in taiyaku PR #308, which is open.
 
 ## Open
 
@@ -269,4 +282,80 @@ after the merge.
   across a sentence break: "Thanks, Ned. Marsh is waiting" tapped at "Ned"
   finds Ned Marsh as a whole name over "Ned. Marsh" and hides Ned Hale.
   "Mr. Marsh" needs the same rule, so a fix has to tell a title's full stop
-  from a sentence's.
+  from a sentence's. taiyaku's character cards (taiyaku PR #308) start a
+  look-up at a word before the tap when a name starting there reaches the
+  tap, so there the match reads forward from that word across a sentence's
+  end or a closing quotation mark to the tapped word; a test in
+  taiyaku-library records it as known wrong. The owner decided on
+  2026-11-25 that taiyaku leaves it until haiyaku has a match mode that
+  stops at punctuation, rather than working around it.
+- O26: Words that are no name, kept as a character's names. On taiyaku's
+  character cards at its prototype (2026-11-24), English cards listed such
+  words among a character's other names: "boy", and a room's sign written
+  in capitals. The second is the junk alias O19 lists for Ron in English
+  Chamber of Secrets, a sign written in capitals rather than a name; as a
+  name of more than one word it can bring up Ron's card where a book shows
+  it, which was not tried. Which character, book and chapter carry "boy"
+  was not written down, nor whether it carries a given-name or surname
+  label. Without one, a name of one word is left out of the look-up; with
+  one, every "boy" written in the name's case or in capitals brings up that
+  card, and with a surname label so does "boys", read as the family's
+  plural (`lookup/mod.rs`). Not counted: how many such names the six books
+  carry. A count of stored names that are one lower-case word or written in
+  capitals would show whether extraction's check should turn them down.
+- O27: An everyday Korean word brings up a card through a name of several
+  words. On taiyaku's character cards at its prototype (2026-11-24), a tap
+  on 진짜 ("real", "really") in the Korean books brought up a card one of
+  whose names begins with 진짜 and goes on with Moody's name. Not traced:
+  whether the text tapped went on with the rest of that name, so that a
+  description kept as a name matched whole (O26), or 진짜 matched alone
+  through a label the extraction put on it. The character's stored names
+  and their labels would tell.
+- O28: Two cards for one character in the Korean books. On taiyaku's
+  character cards at its prototype (2026-11-24), a look-up in the Korean
+  books showed two cards for Draco Malfoy (드레이코 말포이). The linking
+  acceptance run, whose link counts the prototype's match (O31), records
+  the likely cause, an O21 case: Korean Chamber of Secrets' Draco stays
+  unlinked, the model having chosen the right candidate with a quote that
+  was only a name, while Goblet of Fire's Draco links to Sorcerer's Stone's
+  from its chapter 8 ([notes.md](notes.md), "Linking acceptance,
+  2026-11-23"). So from Chamber of Secrets on the series shows two.
+  Not traced: the book and chapter of the look-up, and whether that is the
+  whole cause.
+- O29: A Korean name with 뿐이었다 written onto it finds no one. On taiyaku's
+  character cards at its prototype (2026-11-24), a tap on Hagrid's Korean
+  name with 뿐이었다 after it found no card. After a name that ends in a Hangul
+  syllable the look-up admits only one or two particles from its list
+  (`lookup/particles.rs`); 이었다 is on it and 뿐 is not, so the run-on is
+  refused. Whether 뿐, and endings like it, join the list decides it; a
+  look-up test of an invented name carrying it, such as 에이다뿐이었다, would hold
+  the answer.
+- O30: Korean cards carry notes in English. On taiyaku's character cards at
+  its prototype (2026-11-24), the Korean books' cards showed their
+  relations' notes in English; not counted whether every note was. The
+  extraction prompt names no language for a note and gives its examples in
+  English (`extract/prompt.rs`). Which language a note should be in, the
+  book's or the reader's, is the owner's call; the prompt would then say
+  so, and a book already extracted keeps its notes until it is extracted
+  again.
+- O31: Closed: whether the link counts at taiyaku's prototype match the
+  linking acceptance run's. They match the run's counts after
+  `Refusal::Related`. The prototype's `link` made 114 links at 118 calls
+  in English and 88 at 95 in Korean, against 116 at 124 and 89 at 96 in the
+  run's report, which are its run 1. After `Refusal::Related` the run made
+  49 and 65 links at 50 and 68 calls in English and 31 and 57 at 35 and 60
+  in Korean, the same 114 at 118 and 88 at 95 ([notes.md](notes.md),
+  "Linking acceptance, 2026-11-23").
+- O32: A light read of a book's title and chapter titles. `read_book` is
+  the only public read of them, and it, like the sidecar exports
+  (`export_book`, `export_series`), reads the book's whole log, which
+  taiyaku's character cards design judged too much for every tap. So
+  taiyaku reads them once per book and keeps them while its server runs
+  (its plan's FLAG 4): a log replaced under a running server shows the old
+  titles until a restart, and taiyaku's how-to stops the server for a
+  fill. Its one trial of a write while the server ran could not show stale
+  titles, as the replaced log had the same ones. A read of the titles
+  alone, or a version on a log by which a replaced one can be told, would
+  let taiyaku's titles follow a replaced log. taiyaku's plan puts one of
+  them before any fill of a running library, which is the owner's call
+  there.
