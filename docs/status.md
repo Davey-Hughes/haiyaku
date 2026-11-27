@@ -83,17 +83,17 @@ hold a book. The name rules that extraction, linking and the look-up share
 build without `extract`. 0.2.0 is on crates.io, and taiyaku PR #308's
 Cargo.lock resolves haiyaku 0.2.0 from it.
 
-taiyaku's character cards, in taiyaku PR #308 (open), build on haiyaku
-0.2.0 from crates.io: a tap on a name in taiyaku's book reader looks the
-name up in a cast folded from haiyaku's tables in taiyaku's library
-database, and shows that character's card. Its prototype, on 2026-11-24,
-served the English and Korean Sorcerer's Stone, Chamber of Secrets and
-Goblet of Fire, filled by 0.2.0's CLI at the linking acceptance run's
-chapter ranges, every call answered from the reply cache. The prototype, the
-PR's design and its review raised O26 to O32 and the end of O25 for
-haiyaku; O31 is closed already. One more is not filed here: a match for
-each mention of a character on a page, which taiyaku's O543 says needs
-haiyaku API work first.
+taiyaku's character cards, in taiyaku PR #308 (open), build on haiyaku 0.2.0
+from crates.io (the name look-up design, "What taiyaku will do with this"):
+a tap on a name in taiyaku's book reader looks the name up in a cast folded
+from haiyaku's tables in taiyaku's library database, and shows that
+character's card. Its prototype, on 2026-11-24, served the English and
+Korean Sorcerer's Stone, Chamber of Secrets and Goblet of Fire, filled by
+0.2.0's CLI at the linking acceptance run's chapter ranges, every call
+answered from the reply cache. The prototype, the PR's design and its review
+raised O26 to O32 and the end of O25 for haiyaku; O31 is closed already.
+They also raised O33, a match for each mention of a character on a page,
+which taiyaku's O543 (taiyaku PR #308) says needs haiyaku API work first.
 
 ## Decided
 
@@ -152,9 +152,12 @@ haiyaku API work first.
 
 ## Next
 
-1. The taiyaku integration, on haiyaku 0.2.0 from crates.io (the name
-   look-up design, "What taiyaku will do with this"): designed in taiyaku's
-   repository and built in taiyaku PR #308, which is open.
+1. A match mode for the name look-up that stops at a sentence's end or a
+   closing quotation mark but not at a title's full stop, so that "Mr.
+   Marsh" still matches (O25). taiyaku's character cards work without it;
+   only their reading of a name across a sentence's end or a closing
+   quotation mark waits for it, by the owner's decision of 2026-11-25, and
+   ships meanwhile, held by a test named known wrong.
 
 ## Open
 
@@ -359,3 +362,22 @@ haiyaku API work first.
   let taiyaku's titles follow a replaced log. taiyaku's plan puts one of
   them before any fill of a running library, which is the owner's call
   there.
+- O33: A match for each mention of a character in a text. While a card
+  shows, taiyaku's character cards (taiyaku PR #308) mark the other mentions
+  of the first card's character by a rule of the reader's own over that
+  card's names (`bookMentions.ts`), because `characters_named` answers who a
+  text names from its start, not which character each mention on a page is.
+  The blocks searched are those on the screen and a screen either way. The
+  rule keeps to the names that are that character's alone, since a mark on
+  someone else is worse than a mention missed, and marks nothing after a
+  look-up that named several characters by neither the first card's shown
+  name nor its given name. Tests named KNOWN WRONG in taiyaku's
+  `bookMentions.test.ts` record what it gets wrong: it misses a character
+  with a given name named by surname alone, by a title and surname other
+  than its shown name, or by another name that lacks the given name, and it
+  marks a Korean verb form that begins like a Hangul name. Telling a bare
+  surname, or another person's title and surname, apart by who it is needs
+  haiyaku to answer, for a text, which character each mention in it names;
+  then taiyaku's reader asks for it (taiyaku's O543, taiyaku PR #308). Not
+  decided: the API's shape, and how a mention that fits several characters,
+  such as a surname a family shares, is told apart.
