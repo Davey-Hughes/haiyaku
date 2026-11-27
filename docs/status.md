@@ -91,8 +91,8 @@ character's card. Its prototype, on 2026-11-24, served the English and
 Korean Sorcerer's Stone, Chamber of Secrets and Goblet of Fire, filled by
 0.2.0's CLI at the linking acceptance run's chapter ranges, every call
 answered from the reply cache. The prototype, the PR's design and its review
-raised O26 to O32 and the end of O25 for haiyaku; O31 is closed already.
-They also raised O33, a match for each mention of a character on a page,
+raised O26 to O32 and part of O25 for haiyaku; O31 is closed already.
+They also raised O33, a match for each mention of a character in a text,
 which taiyaku's O543 (taiyaku PR #308) says needs haiyaku API work first.
 
 ## Decided
@@ -152,12 +152,12 @@ which taiyaku's O543 (taiyaku PR #308) says needs haiyaku API work first.
 
 ## Next
 
-1. A match mode for the name look-up that stops at a sentence's end or a
-   closing quotation mark but not at a title's full stop, so that "Mr.
-   Marsh" still matches (O25). taiyaku's character cards work without it;
-   only their reading of a name across a sentence's end or a closing
-   quotation mark waits for it, by the owner's decision of 2026-11-25, and
-   ships meanwhile, held by a test named known wrong.
+1. The match mode O25 asks for, which stops a look-up reading a name across
+   a sentence's end, a closing quotation mark or a comma while still reading
+   a name's own marks; O25 says which those are and what is not decided.
+   taiyaku's character cards work without it; only their reading of a name
+   across a sentence's end, a closing quotation mark or a comma waits for
+   it, by the owner's decision of 2026-11-25.
 
 ## Open
 
@@ -281,17 +281,24 @@ which taiyaku's O543 (taiyaku PR #308) says needs haiyaku API work first.
   relative). A joint call for related characters who share a candidate,
   or dropping the first link and asking again, would remove it; the owner
   decides.
-- O25: Punctuation splits words, so the name look-up can match a name
-  across a sentence break: "Thanks, Ned. Marsh is waiting" tapped at "Ned"
-  finds Ned Marsh as a whole name over "Ned. Marsh" and hides Ned Hale.
-  "Mr. Marsh" needs the same rule, so a fix has to tell a title's full stop
-  from a sentence's. taiyaku's character cards (taiyaku PR #308) start a
-  look-up at a word before the tap when a name starting there reaches the
-  tap, so there the match reads forward from that word across a sentence's
-  end or a closing quotation mark to the tapped word; a test in
-  taiyaku-library records it as known wrong. The owner decided on
-  2026-11-25 that taiyaku leaves it until haiyaku has a match mode that
-  stops at punctuation, rather than working around it.
+- O25: Punctuation splits words, so the name look-up can match a name across
+  a sentence break: "Thanks, Ned. Marsh is waiting" tapped at "Ned" finds
+  Ned Marsh as a whole name over "Ned. Marsh" and hides Ned Hale. "Mr.
+  Marsh" needs the same rule, so a fix has to tell a title's full stop from
+  a sentence's. taiyaku's character cards (taiyaku PR #308) start a look-up
+  at a word before the tap when a name starting there reaches the tap, so
+  there the match reads forward from that word across a sentence's end or a
+  closing quotation mark to the tapped word; a test in taiyaku-library
+  records it as known wrong. The owner decided on 2026-11-25 that taiyaku
+  leaves it until haiyaku has a match mode that stops at punctuation, rather
+  than working around it. Besides a title's full stop, the mode must still
+  read an initial, an apostrophe or a hyphen inside a name as part of it.
+  Not decided: which marks it stops at, and how a full stop, or a closing
+  single quotation mark that is the same character as the apostrophe (’ or
+  '), is known to be a name's. taiyaku's known-wrong test holds the
+  sentence's-end and closing-quotation-mark cases only; a bare comma between
+  two names ("Ned, Marsh") is read across the same way, and no test holds
+  that case.
 - O26: Words that are no name, kept as a character's names. On taiyaku's
   character cards at its prototype (2026-11-24), English cards listed such
   words among a character's other names: "boy", and a room's sign written
@@ -362,20 +369,21 @@ which taiyaku's O543 (taiyaku PR #308) says needs haiyaku API work first.
   let taiyaku's titles follow a replaced log. taiyaku's plan puts one of
   them before any fill of a running library, which is the owner's call
   there.
-- O33: A match for each mention of a character in a text. While a card
-  shows, taiyaku's character cards (taiyaku PR #308) mark the other mentions
-  of the first card's character by a rule of the reader's own over that
-  card's names (`bookMentions.ts`), because `characters_named` answers who a
-  text names from its start, not which character each mention on a page is.
-  The blocks searched are those on the screen and a screen either way. The
-  rule keeps to the names that are that character's alone, since a mark on
-  someone else is worse than a mention missed, and marks nothing after a
-  look-up that named several characters by neither the first card's shown
-  name nor its given name. Tests named KNOWN WRONG in taiyaku's
-  `bookMentions.test.ts` record what it gets wrong: it misses a character
-  with a given name named by surname alone, by a title and surname other
-  than its shown name, or by another name that lacks the given name, and it
-  marks a Korean verb form that begins like a Hangul name. Telling a bare
+- O33: A match for each mention of a character in a text. While a card shows
+  outside an edition compare, taiyaku's character cards (taiyaku PR #308)
+  mark the other mentions of the first card's character by a rule of the
+  reader's own over that card's names (`bookMentions.ts`), because
+  `characters_named` answers who a text names from its start, not which
+  character each mention in a text is. The blocks searched are those on the
+  screen and within a screen of it either way. The rule keeps to the names
+  that are that character's alone, since a mark on someone else is worse
+  than a mention missed, and marks nothing after a look-up that named
+  several characters by neither the first card's shown name nor its given
+  name. Tests named KNOWN WRONG in taiyaku's `bookMentions.test.ts` record
+  some of what it gets wrong: it misses a character with a given name named
+  by surname alone, by a title and surname (unless that is its shown name
+  and the text looked up), or by another name that lacks the given name, and
+  it marks a Korean verb form that begins like a Hangul name. Telling a bare
   surname, or another person's title and surname, apart by who it is needs
   haiyaku to answer, for a text, which character each mention in it names;
   then taiyaku's reader asks for it (taiyaku's O543, taiyaku PR #308). Not
